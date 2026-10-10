@@ -1,1 +1,6 @@
 *.log
+
+# Local disk-image build artifacts
+dist/
+*.qcow2
+*.raw

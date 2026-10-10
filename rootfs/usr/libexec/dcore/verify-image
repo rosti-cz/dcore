@@ -27,7 +27,12 @@ done
 for tool in fish htop vim nmap git tmux wget curl jq unzip iotop rsync http batcat rg tracepath duf docker rclone incus zfs bootc; do
     command -v "$tool" > /dev/null
 done
-dpkg-query -W zfs-dkms zfsutils-linux incus docker.io docker-compose systemd-timesyncd > /dev/null
+test -x /usr/libexec/incus/incus-agent
+test -x /usr/libexec/incus/incus-agent-setup
+test -s /usr/lib/udev/rules.d/60-incus-agent.rules
+systemd-analyze verify --man=no incus-agent.service
+grep -qx 'ExecStart=/usr/libexec/dcore/incus-agent' /usr/lib/systemd/system/incus-agent.service.d/10-host-agent.conf
+dpkg-query -W incus-agent zfs-dkms zfsutils-linux incus docker.io docker-compose systemd-timesyncd > /dev/null
 incus --version
 LD_LIBRARY_PATH=/opt/incus/lib /opt/incus/bin/incusd --version
 LD_LIBRARY_PATH=/opt/incus/lib "/opt/incus/bin/qemu-system-$(uname -m)" --version

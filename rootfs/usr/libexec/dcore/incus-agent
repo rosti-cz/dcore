@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+exec /run/incus_agent/incus-agent "$@"

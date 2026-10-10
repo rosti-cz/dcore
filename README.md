@@ -1,6 +1,8 @@
 # dcore
 
 Debian Trixie bootc server image derived from [bootcrew/mono](https://github.com/bootcrew/mono/blob/main/debian/Containerfile).
+**dcore is still a work in progress and is not running anywhere in our production yet.**
+
 It includes Debian ZFS (with a module compiled for the image kernel), Incus from
 [Zabbly's stable repository](https://github.com/zabbly/incus), Docker and Compose,
 all requested CLI tools, and the latest stable Rustic and Restic releases.
@@ -15,7 +17,7 @@ Release downloads are checked against upstream SHA-256 checksums.
   iputils-tracepath (`tracepath`), rsync, rclone.
 - Development and files: git, jq, unzip, bat (`batcat`), ripgrep (`rg`),
   bzip2, zstd.
-- Containers: Incus (Zabbly stable), Docker (`docker.io` and `docker-cli`),
+- Containers: Incus (Zabbly stable), Incus guest-agent integration (Debian), Docker (`docker.io` and `docker-cli`),
   Docker Compose (`docker compose`), Podman, skopeo.
 - Backups: latest stable Rustic (`rustic`) and Restic (`restic`).
 - System: bootc, OSTree, sudo, OpenSSH server, netplan, systemd-resolved,
@@ -35,6 +37,12 @@ on manual dispatch. Successful default-branch builds publish the same image to:
 - `ghcr.io/rosti-cz/dcore:trixie`
 - `ghcr.io/rosti-cz/dcore:stable`
 - `ghcr.io/rosti-cz/dcore:latest`
+
+These daily tags describe **Debian releases**, not the maturity of the dcore
+project. `trixie` is Debian's codename; `stable` follows the Debian release
+selected by `stable_release`; `latest` is an alias for that same default stable
+Debian build. None of these tags imply that dcore is production-ready. Versioned
+OCI tags created for GitHub releases identify dcore project releases separately.
 
 The repository's `GITHUB_TOKEN` needs package write access (already requested by
 the workflow). Set the GHCR package to public if hosts should pull anonymously;
@@ -75,6 +83,37 @@ Password SSH login is disabled. Default networking uses DHCP on `en*` and `eth*`
 Replace `/etc/netplan/90-default.yaml` if your host needs static addressing.
 
 ## Test in an Incus VM
+
+The installer automates the temporary-VM procedure below. Run it on an amd64
+Incus host with VM support, an initialized storage pool, and a profile with
+network access:
+
+```bash
+./scripts/incus_install dcore-test --pool default --ssh-key ~/.ssh/id_ed25519.pub
+# Optional settings:
+./scripts/incus_install dcore-other --image ghcr.io/rosti-cz/dcore:trixie \
+  --profile default --cpu 4 --memory 8GiB --disk 48GiB
+incus exec dcore-test -- bash
+incus list dcore-test
+```
+
+The SSH public key is optional: the Incus guest agent provides administrator
+access. The script refuses existing resource names and never uses a host disk.
+It checks the new OS volume's virtio serial, installs with bootc, then waits up
+to ten minutes for the dcore agent. It removes its temporary installer on success;
+on failure it prints available serial-console logs and removes resources it
+created. Pass `--keep-on-failure` to preserve failed VMs and volumes for inspection.
+The custom OS volume persists on success; delete it separately when
+removing the VM. Use `--help` for all options. OCI mode needs a publicly pullable
+image; it does not copy host registry credentials into the guest.
+
+The guest-agent setup is triggered by Incus's virtio port through Debian's udev
+rule. It copies the host's agent and per-instance credentials into `/run`, then
+runs that host-matched binary. No agent credentials are baked into the image and
+no writes to immutable `/usr` are required. A regular QEMU VM without the Incus
+port does not start the agent.
+
+### Manual installation
 
 Use an **amd64** Incus host with VM support, an initialized storage pool, and a
 profile providing network access (normally the default profile and `incusbr0`).
@@ -141,9 +180,14 @@ to two running VMs. Exit the serial console with Ctrl+A, Q.
 
 The explicit native composefs backend is required: bootc v1.17.1 supports
 systemd-boot with that backend, while this image does not include GRUB/bootupd.
+The image's install configuration disables GPT-auto root discovery so bootc
+writes an explicit root filesystem UUID into boot parameters. This avoids the
+[upstream GPT-auto initrd mount issue](https://github.com/bootc-dev/bootc/issues/2184)
+and applies to both OCI installs and release disks.
 Secure Boot is disabled for this test because the image's ZFS module is unsigned.
-The native backend is experimental; this is a validation recipe, not a claim
-that a complete VM boot test has already passed.
+The native backend is experimental. A local QEMU boot and SSH smoke test passed
+with the corrected image; the automated Incus install/import and guest-agent
+protocol have not yet been tested against an Incus daemon.
 
 Find the guest IP on your Incus bridge and connect with the private key matching
 `SSH_KEY` (add `ssh -i /path/to/private-key` if needed):
@@ -153,9 +197,9 @@ incus network list-leases incusbr0
 ssh root@GUEST_IP
 ```
 
-Use SSH for dcore: it currently does not ship the Incus guest agent, so
-`incus exec dcore-test` and guest-reported IP addresses in `incus list` are not
-available by default. Inside the guest, check:
+Current builds include the Incus guest agent, so `incus exec dcore-test -- bash`
+and guest-reported addresses in `incus list` are available after boot. Inside the
+guest, check:
 
 ```sh
 bootc status
@@ -192,6 +236,85 @@ incus storage volume delete "$POOL" dcore-boot
 See the official [Incus VM creation instructions](https://linuxcontainers.org/incus/docs/main/howto/instances_create/),
 [block-volume devices](https://linuxcontainers.org/incus/docs/main/reference/devices_disk/),
 and [bootc bootloader support](https://github.com/bootc-dev/bootc/blob/v1.17.1/docs/src/bootc-bootloaders.7.md).
+
+## GitHub release images
+
+Publishing a GitHub release triggers a separate workflow that checks out the
+release's tag, builds every configured Debian variant for amd64, publishes a
+versioned OCI image, and installs that exact image digest into a fresh disk. It
+does not move the daily `trixie`, `stable`, or `latest` tags. The installed disk
+tracks the corresponding Debian codename tag for future `bootc upgrade` calls.
+The release manifest records the initial source digest and commit.
+
+Each release contains the following (replace `v0.1.0` with the actual tag):
+
+- `dcore-v0.1.0-trixie-amd64.qcow2`: standalone UEFI QEMU disk.
+- `dcore-v0.1.0-trixie-amd64-incus.tar.xz`: unified Incus VM image, including
+  metadata and the same QCOW2 disk.
+- Per-variant provenance manifest, plus combined `SHA256SUMS`.
+
+Install a release with checksum verification and optional SSH-key provisioning:
+
+```bash
+./scripts/incus_install dcore-release --release v0.1.0 --debian trixie \
+  --pool default --ssh-key ~/.ssh/id_ed25519.pub
+```
+
+For a manual Incus import, download the Incus archive and `SHA256SUMS` from the
+same release, verify the archive's checksum, then run:
+
+```bash
+incus image import dcore-v0.1.0-trixie-amd64-incus.tar.xz --alias dcore-v0.1.0
+incus launch dcore-v0.1.0 dcore-release --vm -s default \
+  -c limits.cpu=2 -c limits.memory=4GiB -c security.secureboot=false
+incus exec dcore-release -- bash
+```
+
+The published artifacts contain no personal SSH keys or passwords. Incus users
+can provision access through the included guest agent. For a standalone QEMU
+build with SSH access, run the shared builder as root with `SSH_PUBLIC_KEY`
+pointing to an existing public key; this affects only your local disk artifacts,
+not the OCI image. Obtain the immutable OCI digest first, then run:
+
+```bash
+sudo env SSH_PUBLIC_KEY="$HOME/.ssh/id_ed25519.pub" \
+  scripts/build-disk-images.sh \
+  ghcr.io/rosti-cz/dcore@sha256:REPLACE_WITH_DIGEST \
+  ghcr.io/rosti-cz/dcore:trixie local-test trixie ./dist
+```
+
+On a Debian/Ubuntu QEMU host with `qemu-system-x86`, `qemu-utils`, and `ovmf`
+installed, create a writable overlay and a private firmware variable store:
+
+```bash
+qemu-img create -f qcow2 -F qcow2 \
+  -b "$(realpath dist/dcore-local-test-trixie-amd64.qcow2)" dcore-test.qcow2
+cp /usr/share/OVMF/OVMF_VARS_4M.fd dcore-test-vars.fd
+qemu-system-x86_64 -enable-kvm -machine q35 -m 4096 -smp 2 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=dcore-test-vars.fd \
+  -drive if=virtio,format=qcow2,file=dcore-test.qcow2 \
+  -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22 \
+  -nographic
+# In another terminal, using the matching private key:
+ssh -p 2222 root@127.0.0.1
+```
+
+Firmware paths vary by distribution. Use x86_64 UEFI firmware without Secure
+Boot, a separate writable variable store per VM, and virtio networking/disks.
+The serial console is `ttyS0`. The downloaded QCOW2 can also be used as the base
+for an overlay, but direct QEMU access requires SSH-key provisioning first.
+
+Release publication is the trigger; committing the workflow does not create a
+release. Local validation exercised bootc disk installation, compressed QCOW2
+integrity, Incus archive structure, checksums, and provenance generation. An
+unmodified build then booted and rebooted successfully under QEMU with SSH
+access and a persistent SSH host key, kernel 6.12.111, ZFS 2.3.9, active
+`systemd-timesyncd` and Docker, fstrim enabled,
+automatic updates disabled, and no failed systemd units. External NTP
+synchronization was not confirmed. Incus daemon import,
+`incus exec`/guest-agent protocol, and the actual GitHub release event/upload
+remain unverified. Validate these before relying on the release pipeline.
 
 ## Weekly automatic image updates
 

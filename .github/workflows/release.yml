@@ -1,0 +1,140 @@
+name: Build release VM images
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-images-${{ github.event.release.id }}
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.config.outputs.matrix }}
+      bootc_ref: ${{ steps.config.outputs.bootc_ref }}
+      incus_channel: ${{ steps.config.outputs.incus_channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - id: config
+        name: Validate release and read Debian variants
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 - <<'PYCONFIG'
+          import json, os, re
+          tag = os.environ['RELEASE_TAG']
+          assert re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,79}', tag), 'Use a filename-safe release tag, e.g. v1.0.0'
+          config = json.load(open('build-config.json'))
+          assert config['releases'] and len(config['releases']) == len(set(config['releases']))
+          assert config['stable_release'] in config['releases']
+          for release in config['releases']:
+              assert re.fullmatch(r'[a-z][a-z0-9-]*', release), release
+              assert len(tag + '-' + release) <= 128, 'OCI tag is too long'
+          assert re.fullmatch(r'[A-Za-z0-9._/-]+', config['bootc_ref'])
+          assert config['incus_channel'] in ('stable', 'lts-6.0', 'lts-7.0', 'daily')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('matrix=' + json.dumps({'release': config['releases']}) + '\n')
+              out.write('bootc_ref=' + config['bootc_ref'] + '\n')
+              out.write('incus_channel=' + config['incus_channel'] + '\n')
+          PYCONFIG
+
+  build:
+    needs: configure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.configure.outputs.matrix) }}
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      REPOSITORY: ${{ github.repository }}
+      DEBIAN_RELEASE: ${{ matrix.release }}
+      BOOTC_REF: ${{ needs.configure.outputs.bootc_ref }}
+      INCUS_CHANNEL: ${{ needs.configure.outputs.incus_channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Prepare disk-image tools and runner space
+        run: |
+          # Remove unused SDKs only on this disposable GitHub-hosted runner.
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo apt-get update
+          sudo apt-get install -y podman qemu-utils xz-utils
+          sudo modprobe loop
+      - name: Build and verify release OCI image
+        run: |
+          IMAGE="ghcr.io/${REPOSITORY,,}"
+          VERSIONED_IMAGE="$IMAGE:$RELEASE_TAG-$DEBIAN_RELEASE"
+          SOURCE_REVISION=$(git rev-parse HEAD)
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "VERSIONED_IMAGE=$VERSIONED_IMAGE" >> "$GITHUB_ENV"
+          sudo podman build --pull=always --format=oci \
+            --build-arg "DEBIAN_RELEASE=$DEBIAN_RELEASE" \
+            --build-arg "BOOTC_REF=$BOOTC_REF" \
+            --build-arg "INCUS_CHANNEL=$INCUS_CHANNEL" \
+            --build-arg "IMAGE_SOURCE=https://github.com/$REPOSITORY" \
+            --build-arg "IMAGE_REVISION=$SOURCE_REVISION" \
+            --tag "$VERSIONED_IMAGE" --file Containerfile .
+          sudo podman run --rm "$VERSIONED_IMAGE" /usr/libexec/dcore/verify-image
+          # Keep the tagged result, discard compiler layers before allocating disks.
+          sudo podman image prune --force
+      - name: Publish versioned OCI image
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | sudo podman login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          trap 'sudo podman logout ghcr.io' EXIT
+          sudo podman push --digestfile /tmp/dcore-release-digest "$VERSIONED_IMAGE"
+          DIGEST=$(sudo cat /tmp/dcore-release-digest)
+          echo "SOURCE_IMAGE=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
+      - name: Build QEMU and Incus artifacts
+        run: |
+          sudo scripts/build-disk-images.sh "$SOURCE_IMAGE" "$IMAGE:$DEBIAN_RELEASE" \
+            "$RELEASE_TAG" "$DEBIAN_RELEASE" "$GITHUB_WORKSPACE/dist" 32G
+          sudo chown -R "$(id -u):$(id -g)" dist
+      - name: Upload artifacts to the triggering release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STEM="dcore-$RELEASE_TAG-$DEBIAN_RELEASE-amd64"
+          gh release upload "$RELEASE_TAG" --repo "$REPOSITORY" --clobber \
+            "dist/$STEM.qcow2" "dist/$STEM-incus.tar.xz" "dist/$STEM-manifest.json"
+      - name: Share checksums for the release
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-checksums-${{ matrix.release }}
+          path: dist/*-SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+
+  checksums:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-checksums-*
+          path: checksums
+          merge-multiple: true
+      - name: Upload combined SHA256SUMS to the triggering release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          cat checksums/*-SHA256SUMS | sort -k2 > SHA256SUMS
+          gh release upload "$RELEASE_TAG" SHA256SUMS --repo "$REPOSITORY" --clobber

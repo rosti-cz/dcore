@@ -15,6 +15,12 @@ Components: main
 Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/zabbly.asc
 EOF
+# Keep the guest-agent integration from Debian; the server supplies its agent binary.
+cat > /etc/apt/preferences.d/debian-incus-agent <<'EOF'
+Package: incus-agent
+Pin: release o=Debian
+Pin-Priority: 1002
+EOF
 # Prefer Zabbly even if Debian ships a newer Incus package version.
 cat > /etc/apt/preferences.d/zabbly-incus <<'EOF'
 Package: incus incus-* libincus*
@@ -33,7 +39,7 @@ apt-get install -y --no-install-recommends \
     netplan.io libnss-resolve libnss-myhostname openssh-server skopeo \
     systemd systemd-sysv systemd-boot systemd-boot-efi systemd-resolved \
     systemd-timesyncd xfsprogs libostree-1-1 ostree dracut kmod podman sudo \
-    zfs-dkms zfsutils-linux zfs-zed zfs-dracut incus \
+    zfs-dkms zfsutils-linux zfs-zed zfs-dracut incus incus-agent \
     fish htop vim nmap git tmux wget curl jq unzip iotop rsync httpie bat \
     ripgrep iputils-tracepath duf docker.io docker-cli docker-compose rclone \
     bzip2 zstd

@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# Install only into newly created Incus resources; never select a host disk.
+set -euo pipefail
+usage() {
+    cat <<'HELP'
+Usage: incus_install NAME [OPTIONS]
+  --image REF          OCI image (default ghcr.io/rosti-cz/dcore:trixie)
+  --release TAG        Install a published GitHub release's Incus image instead
+  --debian CODENAME    Release artifact variant (default trixie)
+  --pool POOL          Storage pool (default default)
+  --profile PROFILE    Network/device profile (default default)
+  --cpu N              CPUs (default 2)
+  --memory SIZE        RAM (default 4GiB)
+  --disk SIZE          OS disk (default 32GiB; cannot shrink release artifacts)
+  --ssh-key PATH       Optional existing OpenSSH public key
+  --timeout SECONDS    Guest-agent wait timeout (default 600)
+  --keep-on-failure    Preserve created VMs/volumes for debugging on failure
+  --help               Show this help
+Needs: Incus VM support, initialized pool/profile, curl, jq, sha256sum.
+OCI mode requires a public image; no registry credentials are copied into guests.
+HELP
+}
+[[ ${1:-} != --help && ${1:-} != -h ]] || { usage; exit 0; }
+[[ $# -gt 0 ]] || { usage >&2; exit 2; }
+name=$1; shift
+image=ghcr.io/rosti-cz/dcore:trixie
+release=; debian=trixie; pool=default; profile=default
+cpu=2; memory=4GiB; disk=32GiB; ssh_key=; timeout=600; image_set=false; keep_on_failure=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help|-h) usage; exit 0 ;;
+        --keep-on-failure) keep_on_failure=true; shift; continue ;;
+    esac
+    [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
+    case $1 in
+        --image) image=$2; image_set=true ;; --release) release=$2 ;;
+        --debian) debian=$2 ;; --pool) pool=$2 ;; --profile) profile=$2 ;;
+        --cpu) cpu=$2 ;; --memory) memory=$2 ;; --disk) disk=$2 ;;
+        --ssh-key) ssh_key=$2 ;; --timeout) timeout=$2 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift 2
+done
+[[ $name =~ ^[a-zA-Z][a-zA-Z0-9-]{0,40}$ ]] || { echo 'Invalid instance name' >&2; exit 2; }
+[[ $debian =~ ^[a-z][a-z0-9-]*$ && $cpu =~ ^[1-9][0-9]*$ && $timeout =~ ^[1-9][0-9]*$ ]] || exit 2
+[[ -z $release || $release =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || exit 2
+[[ -z $release || $image_set == false ]] || { echo '--release and --image are mutually exclusive' >&2; exit 2; }
+for command in incus curl jq sha256sum; do
+    command -v "$command" >/dev/null || { echo "Required command missing: $command" >&2; exit 1; }
+done
+if [[ -n $ssh_key ]]; then
+    [[ -f $ssh_key ]] || { echo "Public key not found: $ssh_key" >&2; exit 2; }
+    [[ $(head -c 32 "$ssh_key") == ssh-* || $(head -c 32 "$ssh_key") == ecdsa-* ]] || { echo 'Expected an OpenSSH public key' >&2; exit 2; }
+fi
+helper="${name}-installer"; volume="${name}-boot"; alias="${name}-release"
+# Enumerate first so an unavailable daemon cannot be mistaken for absent resources.
+instances=$(incus list --format=json)
+for candidate in "$name" "$helper"; do
+    if jq -e --arg name "$candidate" 'any(.[]; .name == $name)' <<<"$instances" >/dev/null; then
+        echo "Instance already exists: $candidate" >&2; exit 1
+    fi
+done
+volumes=$(incus storage volume list "$pool" --format=json)
+if jq -e --arg name "$volume" 'any(.[]; .name == $name and .type == "custom")' <<<"$volumes" >/dev/null; then
+    echo "Volume already exists: $volume" >&2; exit 1
+fi
+incus profile show "$profile" >/dev/null
+work=$(mktemp -d)
+helper_created=false; volume_created=false; guest_created=false; alias_created=false; success=false
+cleanup() {
+    local status=$?
+    trap - EXIT
+    if [[ $success != true ]]; then
+        for failed_guest in "$name" "$helper"; do
+            # Print the console before cleanup so failed boots remain diagnosable.
+            incus console "$failed_guest" --show-log >&2 2>/dev/null || true
+        done
+    fi
+    if [[ $success != true && $keep_on_failure == true ]]; then
+        echo "Preserving created resources for debugging: $name, $helper, $pool/$volume" >&2
+        rm -rf -- "$work"
+        exit "$status"
+    fi
+    if [[ $helper_created == true ]]; then incus delete "$helper" --force || true; fi
+    if [[ $success != true && $guest_created == true ]]; then incus delete "$name" --force || true; fi
+    if [[ $success != true && $volume_created == true ]]; then incus storage volume delete "$pool" "$volume" || true; fi
+    if [[ $alias_created == true ]]; then incus image alias delete "$alias" || true; fi
+    rm -rf -- "$work"
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+wait_agent() {
+    local instance=$1 deadline=$((SECONDS + timeout))
+    until incus exec "$instance" -- true >/dev/null 2>&1; do
+        if (( SECONDS >= deadline )); then
+            echo "Agent timeout for $instance; inspect incus console $instance --show-log" >&2
+            return 1
+        fi
+        sleep 3
+    done
+}
+if [[ -n $release ]]; then
+    [[ $(uname -m) == x86_64 ]] || { echo 'Release artifacts currently require amd64' >&2; exit 1; }
+    # Unique alias avoids changing a user's existing image aliases.
+    aliases=$(incus image alias list --format=json)
+    if jq -e --arg name "$alias" 'any(.[]; .name == $name)' <<<"$aliases" >/dev/null; then
+        echo "Image alias already exists: $alias" >&2; exit 1
+    fi
+    artifact="dcore-${release}-${debian}-amd64-incus.tar.xz"
+    base="https://github.com/rosti-cz/dcore/releases/download/${release}"
+    curl --fail --location --retry 3 "$base/SHA256SUMS" -o "$work/SHA256SUMS"
+    curl --fail --location --retry 3 "$base/$artifact" -o "$work/$artifact"
+    checksum=$(awk -v file="$artifact" '$2 == file || $2 == "*"file {print $1}' "$work/SHA256SUMS")
+    [[ $checksum =~ ^[a-fA-F0-9]{64}$ ]] || { echo 'Missing or duplicate artifact checksum' >&2; exit 1; }
+    (cd "$work"; printf '%s  %s\n' "$checksum" "$artifact" | sha256sum --check -)
+    incus image import "$work/$artifact" --alias "$alias"
+    alias_created=true
+    incus init "$alias" "$name" --vm -s "$pool" -p "$profile" \
+        -c "limits.cpu=$cpu" -c "limits.memory=$memory" \
+        -c security.secureboot=false -d "root,size=$disk"
+    guest_created=true
+else
+    echo "Creating temporary Debian installer and NEW volume $pool/$volume"
+    incus init images:debian/13 "$helper" --vm -s "$pool" -p "$profile" \
+        -c "limits.cpu=$cpu" -c "limits.memory=$memory" -d root,size=20GiB
+    helper_created=true
+    incus start "$helper"
+    wait_agent "$helper"
+    incus storage volume create "$pool" "$volume" --type=block "size=$disk"
+    volume_created=true
+    incus config device add "$helper" target disk pool="$pool" source="$volume" io.bus=virtio-blk
+    incus exec "$helper" -- bash -eu -c 'apt-get update; apt-get install -y podman'
+    incus exec "$helper" -- udevadm settle
+    incus exec "$helper" -- test -b /dev/disk/by-id/virtio-incus_target
+    key_args=(); key_mount=()
+    if [[ -n $ssh_key ]]; then
+        incus file push "$ssh_key" "$helper/root/dcore-install.pub"
+        key_mount=(-v /root/dcore-install.pub:/run/dcore-install.pub:ro)
+        key_args=(--root-ssh-authorized-keys /run/dcore-install.pub)
+    fi
+    incus exec "$helper" -- podman pull "$image"
+    incus exec "$helper" -- podman run --rm --pull=never --privileged --pid=host --ipc=host \
+        --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
+        "${key_mount[@]}" "$image" bootc install to-disk /dev/disk/by-id/virtio-incus_target \
+        --filesystem ext4 --composefs-backend --bootloader systemd --disable-selinux \
+        --generic-image --target-imgref "$image" "${key_args[@]}" --karg console=ttyS0,115200n8
+    incus stop "$helper"
+    incus config device remove "$helper" target
+    incus init "$name" --empty --vm -s "$pool" -p "$profile" \
+        -c "limits.cpu=$cpu" -c "limits.memory=$memory" \
+        -c security.secureboot=false -d root,size=1GiB
+    guest_created=true
+    incus config device add "$name" os disk pool="$pool" source="$volume" io.bus=virtio-blk boot.priority=10
+fi
+incus start "$name"
+wait_agent "$name"
+# Release artifacts carry no personal key; provision it through the guest agent.
+if [[ -n $release && -n $ssh_key ]]; then
+    incus exec "$name" -- install -d -m 0700 /root/.ssh
+    incus file push "$ssh_key" "$name/root/.ssh/authorized_keys" --mode=0600
+fi
+incus exec "$name" -- bootc status
+success=true
+printf '\nReady: incus exec %s -- bash\nConsole: incus console %s\n' "$name" "$name"
+if [[ $volume_created == true ]]; then
+    printf 'OS volume: %s/%s (remove separately after deleting the VM)\n' "$pool" "$volume"
+fi

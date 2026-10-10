@@ -15,7 +15,7 @@ rm -f /etc/ssh/ssh_host_*
 : > /etc/machine-id
 # Ensure sshd generates host keys on the first installed boot.
 install -d /etc/systemd/system/ssh.service.d
-printf '[Service]\nExecStartPre=/usr/bin/ssh-keygen -A\n' > /etc/systemd/system/ssh.service.d/10-host-keys.conf
+printf '[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStartPre=/usr/sbin/sshd -t\n' > /etc/systemd/system/ssh.service.d/10-host-keys.conf
 # resolv-conf.conf creates the resolver symlink during systemd-tmpfiles at boot.
 # Debian creates these accounts/groups with maintainer scripts. Declare them for
 # installed hosts whose locally modified /etc is preserved across image updates.
@@ -30,3 +30,13 @@ install -d /usr/lib/sysusers.d
         printf 'u dnsmasq -:%s "DNS forwarder" %s %s\n' "$primary_group" "$user_home" "$user_shell"
     fi
 } > /usr/lib/sysusers.d/10-dcore-extra.conf
+
+# Debian's GPT-auto initrd root mount can fail with native composefs/systemd-boot.
+# Let bootc emit the filesystem UUID so dracut explicitly mounts the root disk.
+install -d -m 0755 /usr/lib/bootc/install
+printf '[install]\ndiscoverable-partitions = false\n' > /usr/lib/bootc/install/10-dcore.toml
+# Exercise bootc's TOML parser, not just the text written above.
+bootc install print-configuration | python3 -c 'import json, sys; assert json.load(sys.stdin)["discoverable-partitions"] is False'
+
+# Validate the SSH unit with the first-boot host-key drop-in applied.
+systemd-analyze verify --man=no ssh.service
