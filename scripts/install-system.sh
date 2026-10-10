@@ -34,13 +34,13 @@ case "$(dpkg --print-architecture)" in
 esac
 apt-get update
 apt-get install -y --no-install-recommends \
-    btrfs-progs bubblewrap dosfstools e2fsprogs fdisk firmware-linux-free \
+    btrfs-progs bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
     "linux-image-${kernel_arch}" "linux-headers-${kernel_arch}" \
     netplan.io libnss-resolve libnss-myhostname openssh-server skopeo \
     systemd systemd-sysv systemd-boot systemd-boot-efi systemd-resolved \
     systemd-timesyncd xfsprogs libostree-1-1 ostree dracut kmod podman sudo \
     zfs-dkms zfsutils-linux zfs-zed zfs-dracut incus incus-agent \
-    fish htop vim nmap git tmux wget curl jq unzip iotop rsync httpie bat \
+    fish htop vim nmap git tmux wget curl jq unzip iotop ncdu rsync httpie bat \
     ripgrep iputils-tracepath duf docker.io docker-cli docker-compose rclone \
     bzip2 zstd
 mapfile -t kernels < <(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n')

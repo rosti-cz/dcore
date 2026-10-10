@@ -24,7 +24,7 @@ for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updat
         echo "Unexpected enabled update timer: $unit" >&2; exit 1
     fi
 done
-for tool in fish htop vim nmap git tmux wget curl jq unzip iotop rsync http batcat rg tracepath duf docker rclone incus zfs bootc; do
+for tool in fish htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs bootc; do
     command -v "$tool" > /dev/null
 done
 test -x /usr/libexec/incus/incus-agent
