@@ -82,6 +82,24 @@ SSH authorized key, and choose a persistent registry tag as the image source.
 Password SSH login is disabled. Default networking uses DHCP on `en*` and `eth*`.
 Replace `/etc/netplan/90-default.yaml` if your host needs static addressing.
 
+## Testing options
+
+Use an amd64 test machine and wired DHCP networking. Incus and QEMU need an
+x86_64 VM with UEFI firmware and Secure Boot disabled; bare metal needs the same
+firmware configuration. These images use native composefs, systemd-boot and an
+ext4 root filesystem. The Incus guest agent supplies access inside Incus. QEMU
+and bare metal need your SSH public key provisioned before their first boot;
+password login and a default administrator password are not provided.
+
+- [Incus](#test-in-an-incus-vm): install the current OCI image with the helper,
+  or import a release image.
+- [QEMU](#test-with-qemu): build a disk with your key, or boot a provisioned
+  release disk with a writable overlay.
+- [Bare metal](#test-on-bare-metal): install the OCI image from live Linux,
+  or write a provisioned raw release image onto a spare disk.
+- [System checks](#verify-the-installed-system): verify bootc, networking,
+  services, storage and updates after boot.
+
 ## Test in an Incus VM
 
 The installer automates the temporary-VM procedure below. Run it on an amd64
@@ -95,6 +113,7 @@ network access:
   --profile default --cpu 4 --memory 8GiB --disk 48GiB
 incus exec dcore-test -- bash
 incus list dcore-test
+incus exec dcore-test -- bootc status
 ```
 
 The SSH public key is optional: the Incus guest agent provides administrator
@@ -106,6 +125,28 @@ created. Pass `--keep-on-failure` to preserve failed VMs and volumes for inspect
 The custom OS volume persists on success; delete it separately when
 removing the VM. Use `--help` for all options. OCI mode needs a publicly pullable
 image; it does not copy host registry credentials into the guest.
+
+For a published release, use its actual tag:
+
+```bash
+./scripts/incus_install dcore-release --release v0.1.0 --debian trixie \
+  --pool default --ssh-key ~/.ssh/id_ed25519.pub
+incus exec dcore-release -- bash
+```
+
+If the agent wait times out, use `--keep-on-failure` and inspect
+`incus console INSTANCE --show-log`. Confirm the Incus host can supply its VM
+agent (Debian-packaged hosts may need `incus-agent` installed on the host too).
+After testing an OCI installation, remove its VM and separate OS volume:
+
+```bash
+incus stop dcore-test
+incus delete dcore-test
+incus storage volume delete default dcore-test-boot
+```
+
+A release import uses the instance's root disk, so deleting `dcore-release`
+also removes that disk. The installer caches imported images in Incus.
 
 The guest-agent setup is triggered by Incus's virtio port through Debian's udev
 rule. It copies the host's agent and per-instance credentials into `/run`, then
@@ -198,31 +239,8 @@ ssh root@GUEST_IP
 ```
 
 Current builds include the Incus guest agent, so `incus exec dcore-test -- bash`
-and guest-reported addresses in `incus list` are available after boot. Inside the
-guest, check:
-
-```sh
-bootc status
-uname -r
-modprobe zfs
-zfs version
-incus version
-docker compose version
-rustic --version
-restic version
-timedatectl timesync-status
-systemctl is-enabled systemd-timesyncd.service fstrim.timer dcore-update.timer
-systemctl list-timers fstrim.timer
-bootc upgrade                       # stage an available update without rebooting
-# When ready to test the reboot:
-# bootc upgrade --apply
-```
-
-Expected defaults: time synchronization and fstrim enabled, dcore updates
-disabled. To test scheduled updates, use the timer instructions below. An image
-built before the native-backend condition fix may skip the update units; check
-`systemctl cat dcore-update.service dcore-update.timer`. Current units accept
-either the OSTree marker or a native composefs kernel command-line parameter.
+and guest-reported addresses in `incus list` are available after boot. Run the
+[shared system checks](#verify-the-installed-system) inside the guest.
 
 After shutting down the test guest, remove the test resources if desired:
 
@@ -255,52 +273,160 @@ Each release contains the following (replace `v0.1.0` with the actual tag):
   metadata and the same QCOW2 disk.
 - Per-variant provenance manifest, plus combined `SHA256SUMS`.
 
-The raw image is compressed to fit GitHub release asset limits. Verify its entry
-in `SHA256SUMS`, then decompress it to a raw disk file:
+Download artifacts only after the release workflow finishes. The examples use
+`v0.1.0` as a placeholder; substitute a tag from the
+[releases page](https://github.com/rosti-cz/dcore/releases). Run the following in
+Bash in a new download directory. Each download verifies only its matching
+checksum entry, so you do not need to fetch every release asset:
 
 ```bash
-xz --decompress --keep dcore-v0.1.0-trixie-amd64.raw.xz
+set -euo pipefail
+RELEASE=v0.1.0
+STEM="dcore-${RELEASE}-trixie-amd64"
+RELEASE_URL="https://github.com/rosti-cz/dcore/releases/download/${RELEASE}"
+curl --fail --location --retry 3 "$RELEASE_URL/SHA256SUMS" -o SHA256SUMS
+
+download_asset() {
+  curl --fail --location --retry 3 "$RELEASE_URL/$1" -o "$1" || return
+  awk -v file="$1" '$2 == file || $2 == "*"file' SHA256SUMS |
+    sha256sum --check --strict -
+}
 ```
 
-The raw disk has the same access-provisioning requirements as the QCOW2 image
-described below; published disks contain no personal SSH keys or passwords.
-
-Install a release with checksum verification and optional SSH-key provisioning:
+For a manual Incus import, use the variables and function above:
 
 ```bash
-./scripts/incus_install dcore-release --release v0.1.0 --debian trixie \
-  --pool default --ssh-key ~/.ssh/id_ed25519.pub
-```
-
-For a manual Incus import, download the Incus archive and `SHA256SUMS` from the
-same release, verify the archive's checksum, then run:
-
-```bash
-incus image import dcore-v0.1.0-trixie-amd64-incus.tar.xz --alias dcore-v0.1.0
-incus launch dcore-v0.1.0 dcore-release --vm -s default \
+download_asset "$STEM-incus.tar.xz" && \
+  incus image import "$STEM-incus.tar.xz" --alias "dcore-$RELEASE"
+incus launch "dcore-$RELEASE" dcore-release --vm -s default \
   -c limits.cpu=2 -c limits.memory=4GiB -c security.secureboot=false
+# Wait up to ten minutes for the guest agent:
+timeout 600 bash -c 'until incus exec dcore-release -- true >/dev/null 2>&1; do sleep 3; done'
 incus exec dcore-release -- bash
 ```
 
-The published artifacts contain no personal SSH keys or passwords. Incus users
-can provision access through the included guest agent. For a standalone QEMU
-build with SSH access, run the shared builder as root with `SSH_PUBLIC_KEY`
-pointing to an existing public key; this affects only your local disk artifacts,
-not the OCI image. Obtain the immutable OCI digest first, then run:
+The published artifacts contain no personal SSH keys or passwords. In Incus,
+provision a key through the agent if you also want SSH access:
 
 ```bash
-sudo env SSH_PUBLIC_KEY="$HOME/.ssh/id_ed25519.pub" \
-  scripts/build-disk-images.sh \
-  ghcr.io/rosti-cz/dcore@sha256:REPLACE_WITH_DIGEST \
-  ghcr.io/rosti-cz/dcore:trixie local-test trixie ./dist
+incus exec dcore-release -- install -d -m 0700 /root/.ssh
+incus file push ~/.ssh/id_ed25519.pub \
+  dcore-release/root/.ssh/authorized_keys --mode=0600
 ```
 
-On a Debian/Ubuntu QEMU host with `qemu-system-x86`, `qemu-utils`, and `ovmf`
-installed, create a writable overlay and a private firmware variable store:
+## Prepare a release disk with SSH access
+
+Use this procedure before testing a **published** disk in QEMU or on bare metal.
+It modifies your downloaded copy; release artifacts and their original checksums
+remain unchanged. You need Linux, sudo, Podman, util-linux (`losetup`, `lsblk`),
+xz and an existing SSH public key. Only the public key is copied into the disk.
+Keep the private key on the machine from which you will SSH.
+
+Using the release download variables/function above:
 
 ```bash
-qemu-img create -f qcow2 -F qcow2 \
-  -b "$(realpath dist/dcore-local-test-trixie-amd64.qcow2)" dcore-test.qcow2
+download_asset "$STEM.raw.xz" && xz --decompress --keep "$STEM.raw.xz"
+RAW_IMAGE="$(realpath "$STEM.raw")"
+SSH_KEY="$(realpath ~/.ssh/id_ed25519.pub)"
+```
+
+Alternatively, download the QCOW2 artifact and convert it to a raw working copy
+with `qemu-utils` installed:
+
+```bash
+download_asset "$STEM.qcow2" && \
+  qemu-img convert -f qcow2 -O raw "$STEM.qcow2" "$STEM.raw"
+RAW_IMAGE="$(realpath "$STEM.raw")"
+SSH_KEY="$(realpath ~/.ssh/id_ed25519.pub)"
+```
+
+Choose one path. The raw disk is 32 GiB logically; decompression/conversion and
+copies require sufficient local storage. The current bootc layout has a BIOS
+placeholder partition, an EFI system partition, then ext4 root as partition 3.
+Mount it through bootc so that writes reach the deployment's persistent `/var`,
+rather than attempting to edit its immutable root image directly:
+
+```bash
+(
+  set -euo pipefail
+  test -f "$RAW_IMAGE"
+  test -f "$SSH_KEY"
+  IMAGE=ghcr.io/rosti-cz/dcore:trixie
+  sudo podman pull "$IMAGE"
+  WORK_DIR=$(mktemp -d)
+  LOOP_DEVICE=
+  cleanup() {
+    if [[ -n "$LOOP_DEVICE" ]]; then sudo losetup --detach "$LOOP_DEVICE"; fi
+    rmdir "$WORK_DIR/deployment" "$WORK_DIR/sysroot" "$WORK_DIR" 2>/dev/null || true
+  }
+  trap cleanup EXIT
+  mkdir "$WORK_DIR/sysroot" "$WORK_DIR/deployment"
+  LOOP_DEVICE=$(sudo losetup --find --show --partscan "$RAW_IMAGE")
+  sudo udevadm settle
+  sudo lsblk -o NAME,SIZE,FSTYPE,PARTLABEL "$LOOP_DEVICE"
+  # Confirm partition 3 is the ext4 root partition shown above.
+  sudo podman run --rm --privileged --security-opt label=disable \
+    -v /dev:/dev -v "$WORK_DIR:/work" \
+    -v "$SSH_KEY:/run/dcore-key.pub:ro" \
+    -e "ROOT_PARTITION=${LOOP_DEVICE}p3" "$IMAGE" bash -eu -c '
+      trap '\''umount -R /work/deployment 2>/dev/null || true; umount /work/sysroot 2>/dev/null || true'\'' EXIT
+      mount "$ROOT_PARTITION" /work/sysroot
+      bootc install mount --sysroot /work/sysroot --latest /work/deployment
+      install -d -m 0700 /work/deployment/root/.ssh
+      install -m 0600 /run/dcore-key.pub /work/deployment/root/.ssh/authorized_keys
+      sync
+    '
+)
+```
+
+Do this only while the disk is not booted or attached to a running VM. The key
+file above replaces `authorized_keys` in your working disk. For old releases,
+use a matching versioned OCI image such as
+`ghcr.io/rosti-cz/dcore:v0.1.0-trixie` if its bootc version differs from `:trixie`.
+See [bootc deployment mounting](https://bootc.dev/bootc/bootc-installation.7.html#postprocessing-after-to-filesystem).
+
+## Test with QEMU
+
+On an amd64 Debian/Ubuntu Linux host, install the host tools:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y podman skopeo qemu-system-x86 qemu-utils ovmf xz-utils
+```
+
+### Build a local disk from the current OCI image
+
+Run this from the cloned dcore repository with an existing public key. `skopeo`
+resolves the current immutable image digest; the disk tracks `:trixie` for later
+updates. Use a fresh output directory if you already built `local-test`:
+
+```bash
+IMAGE=ghcr.io/rosti-cz/dcore:trixie
+DIGEST=$(skopeo inspect --format '{{.Digest}}' "docker://$IMAGE")
+sudo env SSH_PUBLIC_KEY="$(realpath ~/.ssh/id_ed25519.pub)" \
+  scripts/build-disk-images.sh \
+  "ghcr.io/rosti-cz/dcore@$DIGEST" "$IMAGE" local-test trixie ./dist
+BASE_DISK="$(realpath dist/dcore-local-test-trixie-amd64.qcow2)"
+BASE_FORMAT=qcow2
+```
+
+### Use a published release disk
+
+Follow [release disk key provisioning](#prepare-a-release-disk-with-ssh-access)
+first, then select its raw disk as the backing file:
+
+```bash
+BASE_DISK="$RAW_IMAGE"
+BASE_FORMAT=raw
+```
+
+### Boot the test VM
+
+Create a writable overlay so the prepared base disk stays unchanged, and use a
+private UEFI variable store for each VM:
+
+```bash
+qemu-img create -f qcow2 -F "$BASE_FORMAT" -b "$BASE_DISK" dcore-test.qcow2
 cp /usr/share/OVMF/OVMF_VARS_4M.fd dcore-test-vars.fd
 qemu-system-x86_64 -enable-kvm -machine q35 -m 4096 -smp 2 \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
@@ -308,14 +434,198 @@ qemu-system-x86_64 -enable-kvm -machine q35 -m 4096 -smp 2 \
   -drive if=virtio,format=qcow2,file=dcore-test.qcow2 \
   -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22 \
   -nographic
-# In another terminal, using the matching private key:
-ssh -p 2222 root@127.0.0.1
 ```
 
-Firmware paths vary by distribution. Use x86_64 UEFI firmware without Secure
-Boot, a separate writable variable store per VM, and virtio networking/disks.
-The serial console is `ttyS0`. The downloaded QCOW2 can also be used as the base
-for an overlay, but direct QEMU access requires SSH-key provisioning first.
+Firmware paths vary by distribution. Use a non-Secure-Boot OVMF code image and
+its matching variable-store size. KVM requires `/dev/kvm` access. For a slower
+software-only test, replace `-enable-kvm` with `-accel tcg`. The serial console
+is `ttyS0`; Ctrl+A, X terminates QEMU, so shut the guest down first.
+
+Connect from another terminal with the private key corresponding to the public
+key you provisioned:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 -p 2222 root@127.0.0.1
+```
+
+Run the [shared checks](#verify-the-installed-system), then test a reboot and
+reconnect. For subsequent boots, rerun QEMU with the existing overlay and
+variable store; do not recreate them. If testing a different VM on the same
+SSH port, remove its previous host-key entry only after confirming it is your
+replacement test VM: `ssh-keygen -R '[127.0.0.1]:2222'`.
+
+When finished, run `poweroff` inside the guest. After QEMU exits, remove only the
+writable test files if desired:
+
+```bash
+rm -- dcore-test.qcow2 dcore-test-vars.fd
+```
+
+See [QEMU's drive and networking options](https://www.qemu.org/docs/master/system/invocation.html).
+
+## Test on bare metal
+
+Use a spare amd64 machine/disk. Enable UEFI boot and disable Secure Boot in its
+firmware. The image does not provide a legacy BIOS bootloader, despite the
+placeholder GPT BIOS partition. Use Ethernet with DHCP for the first boot;
+wireless networking and additional non-free device firmware are not configured.
+Have an existing public SSH key available on the live environment (for example
+on another USB drive). The private key stays on your administration machine.
+
+### Install the current OCI image from live Linux
+
+Boot a Debian/Ubuntu live USB **in UEFI mode** with working internet access.
+Podman needs several GiB of scratch space for the image. Install the live tools:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y podman
+```
+
+Identify the destination by its model, serial and size. Use a whole-disk
+`/dev/disk/by-id/` path, excluding `-partN` paths, and make sure none of its
+partitions are mounted or used as swap. These commands erase the entire selected
+disk; select the spare disk rather than your live USB or an existing system disk.
+
+```bash
+lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,MOUNTPOINTS
+ls -l /dev/disk/by-id/
+```
+
+Set the two paths below explicitly. The confirmation must match the complete
+destination path:
+
+```bash
+(
+  set -euo pipefail
+  IMAGE=ghcr.io/rosti-cz/dcore:trixie
+  TARGET_DISK=/dev/disk/by-id/REPLACE_WITH_YOUR_SPARE_DISK
+  SSH_KEY="$(realpath /path/to/your/id_ed25519.pub)"
+  test -d /sys/firmware/efi
+  test -b "$TARGET_DISK"
+  test -f "$SSH_KEY"
+  lsblk -o NAME,SIZE,MODEL,SERIAL,MOUNTPOINTS "$TARGET_DISK"
+  read -r -p "Type ERASE $TARGET_DISK to install: " CONFIRM
+  [[ "$CONFIRM" == "ERASE $TARGET_DISK" ]]
+  sudo podman pull "$IMAGE"
+  sudo podman run --rm --privileged --pid=host --ipc=host \
+    --security-opt label=disable \
+    -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
+    -v "$SSH_KEY:/run/dcore-install.pub:ro" \
+    "$IMAGE" bootc install to-disk "$TARGET_DISK" \
+    --filesystem ext4 --composefs-backend --bootloader systemd \
+    --disable-selinux --generic-image --target-imgref "$IMAGE" \
+    --root-ssh-authorized-keys /run/dcore-install.pub --karg console=tty0
+  sync
+)
+```
+
+This creates a disk layout using the destination's capacity. `--generic-image`
+installs the standard UEFI fallback loader without changing the live system's
+firmware boot entries. Shut down, remove the live USB, and choose the destination
+disk in the firmware boot menu. If the firmware needs an explicit EFI file,
+select `EFI/BOOT/BOOTX64.EFI` on that disk's EFI partition.
+
+### Write a raw release image to a spare disk
+
+First download, verify, decompress and provision your public key using
+[the release-disk procedure](#prepare-a-release-disk-with-ssh-access). You can do
+that on your Linux workstation before copying the resulting `.raw` file to the
+live environment. A checksum of the original compressed release artifact no
+longer describes your key-customized raw file.
+
+In live Linux, install the GPT tool and identify the destination as above:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y gdisk
+```
+
+The destination must be at least the size of the decompressed raw image. Writing
+a disk file with `dd` erases existing partitions and data on that whole disk:
+
+```bash
+(
+  set -euo pipefail
+  RAW_IMAGE="$(realpath /path/to/key-provisioned-dcore.raw)"
+  TARGET_DISK=/dev/disk/by-id/REPLACE_WITH_YOUR_SPARE_DISK
+  test -f "$RAW_IMAGE"
+  test -b "$TARGET_DISK"
+  [[ $(sudo blockdev --getsize64 "$TARGET_DISK") -ge $(stat -c %s "$RAW_IMAGE") ]]
+  lsblk -o NAME,SIZE,MODEL,SERIAL,MOUNTPOINTS "$TARGET_DISK"
+  read -r -p "Type ERASE $TARGET_DISK to write the image: " CONFIRM
+  [[ "$CONFIRM" == "ERASE $TARGET_DISK" ]]
+  sudo dd if="$RAW_IMAGE" of="$TARGET_DISK" bs=16M conv=fsync status=progress
+  # Place the backup GPT at the actual end when the target exceeds 32 GiB.
+  sudo sgdisk --move-second-header "$TARGET_DISK"
+  sync
+)
+```
+
+Shut down, remove the live USB, and boot the destination in UEFI mode. This path
+retains the image's 32 GiB partition layout; relocating the backup GPT does not
+grow the root filesystem. For a first hardware test, the direct OCI installer
+above avoids that limitation. No bare-metal hardware boot has been validated by
+this project yet.
+
+Find the server's DHCP address in your router, then connect from your
+administration machine:
+
+```bash
+ssh -i ~/.ssh/id_ed25519 root@SERVER_IP
+```
+
+The Incus guest agent does not start on bare metal; your SSH key provides
+administrator access. Run the shared checks below before relying on the machine.
+
+## Verify the installed system
+
+Run these as root through `incus exec`, SSH, or a configured console account:
+
+```bash
+bootc status
+uname -r
+ip -br address
+networkctl status
+systemctl --failed
+modprobe zfs
+zfs version
+incus version
+docker compose version
+rustic --version
+restic version
+btrfs --version
+parted --version
+ncdu --version
+systemctl is-active ssh.service systemd-timesyncd.service docker.service
+systemctl is-enabled fstrim.timer
+systemctl is-enabled dcore-update.timer || true
+timedatectl timesync-status
+timedatectl show -p NTPSynchronized
+systemctl list-timers fstrim.timer
+```
+
+Expected: working DHCP/SSH, ZFS module matching the running kernel, active time
+service, fstrim enabled, and `dcore-update.timer` disabled. The time service being
+active does not prove synchronization; wait for `NTPSynchronized=yes` when an
+NTP server is reachable. For failures, inspect `journalctl -b` and the relevant
+unit's journal. An unchanged OCI image does not exercise an update/reboot.
+
+To test manual image updates, wait for a newer daily image to be published:
+
+```bash
+bootc upgrade          # stage the newer tracked image without rebooting
+bootc status
+# When ready to apply it and deliberately reboot:
+bootc upgrade --apply
+```
+
+Reconnect and inspect `bootc status` and `uname -r`. Use the
+[weekly timer instructions](#weekly-automatic-image-updates) below to opt in to
+scheduled rebooting updates. Keep that timer disabled while testing storage.
+For an ordinary reboot test, run `systemctl reboot` and reconnect afterward.
+
+## Validation status
 
 Release publication is the trigger; committing the workflow does not create a
 release. Local validation exercised bootc disk installation, compressed QCOW2
