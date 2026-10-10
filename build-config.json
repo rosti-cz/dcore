@@ -1,0 +1,6 @@
+{
+  "stable_release": "trixie",
+  "releases": ["trixie"],
+  "bootc_ref": "v1.17.1",
+  "incus_channel": "stable"
+}

@@ -1,0 +1,11 @@
+[Unit]
+Description=Pull the current bootc image and reboot to apply an update
+Documentation=man:bootc(8)
+ConditionPathExists=/run/ostree-booted
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bootc upgrade --apply
+TimeoutStartSec=2h

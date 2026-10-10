@@ -1,0 +1,7 @@
+disable dcore-update.timer
+disable bootc-fetch-apply-updates.timer
+disable bootc-fetch-updates.timer
+disable apt-daily.timer
+disable apt-daily-upgrade.timer
+enable systemd-timesyncd.service
+enable fstrim.timer

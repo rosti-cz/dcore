@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+bootc container lint --fatal-warnings
+ostree --version | grep -q composefs
+systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-update.service /usr/lib/systemd/system/dcore-update.timer
+mapfile -t kernels < <(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
+[[ ${#kernels[@]} == 1 ]]
+kernel=${kernels[0]}
+test -s "/usr/lib/modules/${kernel}/vmlinuz"
+test -s "/usr/lib/modules/${kernel}/initramfs.img"
+modinfo -k "$kernel" zfs > /dev/null
+initramfs="/usr/lib/modules/${kernel}/initramfs.img"
+modules=$(lsinitrd -m "$initramfs")
+for module in bootc ostree zfs; do
+    grep -qx "$module" <<< "$modules"
+done
+root_config=$(lsinitrd -f usr/lib/ostree/prepare-root.conf "$initramfs")
+grep -q 'enabled = yes' <<< "$root_config"
+for unit in systemd-timesyncd.service fstrim.timer; do
+    [[ $(systemctl --root=/ is-enabled "$unit") == enabled ]]
+done
+for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updates.timer apt-daily.timer apt-daily-upgrade.timer; do
+    if systemctl --root=/ is-enabled "$unit" > /dev/null 2>&1; then
+        echo "Unexpected enabled update timer: $unit" >&2; exit 1
+    fi
+done
+for tool in fish htop vim nmap git tmux wget curl jq unzip iotop rsync http batcat rg tracepath duf docker rclone incus zfs bootc; do
+    command -v "$tool" > /dev/null
+done
+dpkg-query -W zfs-dkms zfsutils-linux incus docker.io docker-compose systemd-timesyncd > /dev/null
+incus --version
+LD_LIBRARY_PATH=/opt/incus/lib /opt/incus/bin/incusd --version
+LD_LIBRARY_PATH=/opt/incus/lib "/opt/incus/bin/qemu-system-$(uname -m)" --version
+docker compose version
+rustic --version
+restic version
