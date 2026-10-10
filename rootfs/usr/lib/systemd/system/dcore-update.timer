@@ -1,6 +1,9 @@
 [Unit]
 Description=Weekly bootc image update and automatic reboot
-ConditionPathExists=/run/ostree-booted
+# Trigger on either supported bootc backend; skip ordinary containers.
+ConditionPathExists=|/run/ostree-booted
+ConditionKernelCommandLine=|composefs
+ConditionKernelCommandLine=|composefs.digest
 
 [Timer]
 OnCalendar=Sun *-*-* 04:00:00

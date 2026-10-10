@@ -1,7 +1,10 @@
 [Unit]
 Description=Pull the current bootc image and reboot to apply an update
 Documentation=man:bootc(8)
-ConditionPathExists=/run/ostree-booted
+# Trigger on either supported bootc backend; skip ordinary containers.
+ConditionPathExists=|/run/ostree-booted
+ConditionKernelCommandLine=|composefs
+ConditionKernelCommandLine=|composefs.digest
 Wants=network-online.target
 After=network-online.target
 
