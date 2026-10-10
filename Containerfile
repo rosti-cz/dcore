@@ -23,6 +23,7 @@ RUN --mount=type=bind,source=shared/build.sh,target=/build-bootc.sh \
     . "${CARGO_HOME}/env" && /build-bootc.sh
 
 FROM base AS system
+ARG DEBIAN_RELEASE
 ARG INCUS_CHANNEL=stable
 ARG RUSTIC_VERSION=latest
 ARG RESTIC_VERSION=latest
