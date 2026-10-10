@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build generic UEFI QEMU and Incus images from one exact OCI image.
+# Build generic UEFI raw, QEMU and Incus images from one exact OCI image.
 set -euo pipefail
 
 usage() {
@@ -44,10 +44,10 @@ fi
 mkdir -p "$output_dir"
 output_dir=$(realpath "$output_dir")
 stem="dcore-${release_tag}-${debian_release}-amd64"
-for suffix in .qcow2 -incus.tar.xz -manifest.json -SHA256SUMS; do
+for suffix in .raw.xz .qcow2 -incus.tar.xz -manifest.json -SHA256SUMS; do
     [[ ! -e "$output_dir/$stem$suffix" ]] || { echo "Refusing to overwrite $output_dir/$stem$suffix" >&2; exit 1; }
 done
-# Keep raw disks outside the artifact directory and always remove them on exit.
+# Keep uncompressed raw disks temporary; publish only the compressed raw image.
 work_dir=$(mktemp -d "$output_dir/.disk-build.XXXXXXXX")
 trap 'rm -rf -- "$work_dir"' EXIT
 truncate -s "$disk_size" "$work_dir/root.raw"
@@ -68,6 +68,10 @@ podman run --rm --privileged --pid=host --ipc=host \
     "${install_args[@]}" /output/root.raw
 qemu-img convert -c -f raw -O qcow2 "$work_dir/root.raw" "$output_dir/$stem.qcow2"
 qemu-img check "$output_dir/$stem.qcow2"
+# Compress the original whole-disk image directly, including its partition table.
+# Bound compression memory/threads on hosted runners, and verify the stream.
+xz --threads=2 -3 --stdout "$work_dir/root.raw" > "$output_dir/$stem.raw.xz"
+xz --test "$output_dir/$stem.raw.xz"
 # Hard-link instead of copying the potentially large disk for Incus packaging.
 ln "$output_dir/$stem.qcow2" "$work_dir/rootfs.img"
 creation_date=$(date +%s)
@@ -116,10 +120,10 @@ with open(output, 'w') as stream:
 PYMANIFEST
 (
     cd "$output_dir"
-    sha256sum "$stem.qcow2" "$stem-incus.tar.xz" "$stem-manifest.json" > "$stem-SHA256SUMS"
+    sha256sum "$stem.raw.xz" "$stem.qcow2" "$stem-incus.tar.xz" "$stem-manifest.json" > "$stem-SHA256SUMS"
 )
 # GitHub release assets must be smaller than 2 GiB each.
-for artifact in "$output_dir/$stem.qcow2" "$output_dir/$stem-incus.tar.xz"; do
+for artifact in "$output_dir/$stem.raw.xz" "$output_dir/$stem.qcow2" "$output_dir/$stem-incus.tar.xz"; do
     [[ $(stat -c %s "$artifact") -lt 2147483648 ]] || { echo "Artifact exceeds GitHub's 2 GiB asset limit: $artifact" >&2; exit 1; }
 done
 echo "Built release artifacts in $output_dir"

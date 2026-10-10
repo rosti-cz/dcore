@@ -4,3 +4,4 @@
 dist/
 *.qcow2
 *.raw
+*.raw.xz

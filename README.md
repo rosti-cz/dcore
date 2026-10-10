@@ -248,10 +248,22 @@ The release manifest records the initial source digest and commit.
 
 Each release contains the following (replace `v0.1.0` with the actual tag):
 
+- `dcore-v0.1.0-trixie-amd64.raw.xz`: compressed whole-disk raw image, including
+  the partition table and UEFI bootloader (32 GiB when decompressed).
 - `dcore-v0.1.0-trixie-amd64.qcow2`: standalone UEFI QEMU disk.
 - `dcore-v0.1.0-trixie-amd64-incus.tar.xz`: unified Incus VM image, including
   metadata and the same QCOW2 disk.
 - Per-variant provenance manifest, plus combined `SHA256SUMS`.
+
+The raw image is compressed to fit GitHub release asset limits. Verify its entry
+in `SHA256SUMS`, then decompress it to a raw disk file:
+
+```bash
+xz --decompress --keep dcore-v0.1.0-trixie-amd64.raw.xz
+```
+
+The raw disk has the same access-provisioning requirements as the QCOW2 image
+described below; published disks contain no personal SSH keys or passwords.
 
 Install a release with checksum verification and optional SSH-key provisioning:
 
