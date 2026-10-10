@@ -74,6 +74,14 @@ jobs:
             --build-arg "IMAGE_REVISION=$GITHUB_SHA" \
             --tag "$IMAGE:$DEBIAN_RELEASE" --file Containerfile .
           sudo podman run --rm "$IMAGE:$DEBIAN_RELEASE" /usr/libexec/dcore/verify-image
+      - name: Test root partition and filesystem growth
+        run: |
+          sudo modprobe loop
+          sudo modprobe btrfs
+          sudo modprobe xfs
+          sudo podman run --rm --privileged --security-opt label=disable \
+            -v /dev:/dev -v "$GITHUB_WORKSPACE/tests:/tests:ro" \
+            "$IMAGE:$DEBIAN_RELEASE" /tests/test-grow-root.sh
       - name: Publish to GHCR
         if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         env:

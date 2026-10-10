@@ -3,6 +3,12 @@
 Debian Trixie bootc server image derived from [bootcrew/mono](https://github.com/bootcrew/mono/blob/main/debian/Containerfile).
 **dcore is still a work in progress and is not running anywhere in our production yet.**
 
+**Secure Boot is not supported for now.** Disable it in the machine's UEFI
+firmware or VM configuration before booting dcore. The image does not configure
+a trusted Secure Boot chain or provide an enrollable dcore signing certificate
+for its build-time ZFS modules. Secure Boot signing and key enrollment are
+deferred.
+
 It includes Debian ZFS (with a module compiled for the image kernel), Incus from
 [Zabbly's stable repository](https://github.com/zabbly/incus), Docker and Compose,
 all requested CLI tools, and the latest stable Rustic and Restic releases.
@@ -182,7 +188,7 @@ Wait until `incus exec dcore-installer -- true` succeeds (the Debian guest agent
 needs time to start), then continue in the same shell:
 
 ```bash
-incus storage volume create "$POOL" dcore-boot --type=block size=32GiB
+incus storage volume create "$POOL" dcore-boot --type=block size=10GiB
 incus config device add dcore-installer target disk \
   pool="$POOL" source=dcore-boot io.bus=virtio-blk
 incus file push "$SSH_KEY" dcore-installer/root/dcore-test.pub
@@ -215,7 +221,7 @@ incus start dcore-test --console
 ```
 
 The 1 GiB root device satisfies Incus's instance layout; the VM boots from the
-32 GiB `dcore-boot` volume. The installer VM must be stopped and the volume
+10 GiB `dcore-boot` volume. The installer VM must be stopped and the volume
 detached before attaching it to the test VM. Do not attach a writable OS volume
 to two running VMs. Exit the serial console with Ctrl+A, Q.
 
@@ -225,7 +231,8 @@ The image's install configuration disables GPT-auto root discovery so bootc
 writes an explicit root filesystem UUID into boot parameters. This avoids the
 [upstream GPT-auto initrd mount issue](https://github.com/bootc-dev/bootc/issues/2184)
 and applies to both OCI installs and release disks.
-Secure Boot is disabled for this test because the image's ZFS module is unsigned.
+Secure Boot must remain disabled because dcore does not configure a trusted
+boot chain or trusted signatures for its ZFS modules.
 The native backend is experimental. A local QEMU boot and SSH smoke test passed
 with the corrected image; the automated Incus install/import and guest-agent
 protocol have not yet been tested against an Incus daemon.
@@ -267,7 +274,7 @@ The release manifest records the initial source digest and commit.
 Each release contains the following (replace `v0.1.0` with the actual tag):
 
 - `dcore-v0.1.0-trixie-amd64.raw.xz`: compressed whole-disk raw image, including
-  the partition table and UEFI bootloader (32 GiB when decompressed).
+  the partition table and UEFI bootloader (10 GiB when decompressed).
 - `dcore-v0.1.0-trixie-amd64.qcow2`: standalone UEFI QEMU disk.
 - `dcore-v0.1.0-trixie-amd64-incus.tar.xz`: unified Incus VM image, including
   metadata and the same QCOW2 disk.
@@ -340,7 +347,7 @@ RAW_IMAGE="$(realpath "$STEM.raw")"
 SSH_KEY="$(realpath ~/.ssh/id_ed25519.pub)"
 ```
 
-Choose one path. The raw disk is 32 GiB logically; decompression/conversion and
+Choose one path. The raw disk is 10 GiB logically; decompression/conversion and
 copies require sufficient local storage. The current bootc layout has a BIOS
 placeholder partition, an EFI system partition, then ext4 root as partition 3.
 Mount it through bootc so that writes reach the deployment's persistent `/var`,
@@ -556,17 +563,17 @@ a disk file with `dd` erases existing partitions and data on that whole disk:
   read -r -p "Type ERASE $TARGET_DISK to write the image: " CONFIRM
   [[ "$CONFIRM" == "ERASE $TARGET_DISK" ]]
   sudo dd if="$RAW_IMAGE" of="$TARGET_DISK" bs=16M conv=fsync status=progress
-  # Place the backup GPT at the actual end when the target exceeds 32 GiB.
+  # Place the backup GPT at the actual end when the target exceeds 10 GiB.
   sudo sgdisk --move-second-header "$TARGET_DISK"
   sync
 )
 ```
 
 Shut down, remove the live USB, and boot the destination in UEFI mode. This path
-retains the image's 32 GiB partition layout; relocating the backup GPT does not
-grow the root filesystem. For a first hardware test, the direct OCI installer
-above avoids that limitation. No bare-metal hardware boot has been validated by
-this project yet.
+starts with the image's 10 GiB partition layout. On boot, automatic root growth
+extends the final root partition and filesystem to use the larger disk;
+relocating the backup GPT alone does not grow the filesystem. No bare-metal
+hardware boot has been validated by this project yet.
 
 Find the server's DHCP address in your router, then connect from your
 administration machine:
@@ -598,7 +605,7 @@ btrfs --version
 parted --version
 ncdu --version
 systemctl is-active ssh.service systemd-timesyncd.service docker.service
-systemctl is-enabled fstrim.timer
+systemctl is-enabled fstrim.timer dcore-grow-root.service
 systemctl is-enabled dcore-update.timer || true
 timedatectl timesync-status
 timedatectl show -p NTPSynchronized
@@ -637,6 +644,99 @@ automatic updates disabled, and no failed systemd units. External NTP
 synchronization was not confirmed. Incus daemon import,
 `incus exec`/guest-agent protocol, and the actual GitHub release event/upload
 remain unverified. Validate these before relying on the release pipeline.
+
+Root-growth validation additionally booted 10 GiB native bootc disks under QEMU
+with ext4, single-device Btrfs and XFS. All three had over 4 GiB free, expanded
+successfully when their virtual disks grew to 14 GiB and then 16 GiB, and stayed
+unchanged across an intervening reboot. User data, SSH host keys, and read-only
+`/usr` were preserved. Integration tests also cover interrupted growth,
+read-only backing mounts, a root followed by another partition, unusual
+partition numbering, multi-device Btrfs and unsupported layouts. These tests
+run in daily builds and PR checks, and block publishing if they fail.
+
+## Automatic root disk growth
+
+New release disks and the Incus installer default to **10 GiB**. Older release
+artifacts may contain larger disks; pass a matching `--disk` size when importing
+them (for example `--disk 32GiB` for an older 32 GiB image). The release format
+continues to use ext4; automatic growth also supports installed Btrfs and XFS
+roots. Select those filesystems with `bootc install to-disk --filesystem btrfs`
+or `--filesystem xfs --allow-missing-verity` when doing a custom OCI
+installation. XFS does not provide fs-verity with our kernel; the explicit
+allow-missing-verity option matches the tested native composefs installation. A direct OCI install
+normally fills its destination immediately; release disks can start smaller
+than their destination device.
+
+`dcore-grow-root.service` is enabled by default and runs on every boot. It finds
+the backing filesystem at `/sysroot`, checks its GPT table, and grows root only
+when it is the **physically last partition** with trailing unused space. It
+preserves partition starts, identifiers, and all other partitions. Reserved GPT
+sectors and insignificant alignment gaps remain unused. The filesystem is also
+checked for growth when its partition was already enlarged, so an interrupted
+attempt can recover on the next boot.
+
+- ext4 uses `resize2fs`.
+- Single-device Btrfs uses `btrfs filesystem resize DEVICE_ID:max`.
+- XFS uses `xfs_growfs -d`.
+
+The commands run in a private mount namespace against the physical backing
+filesystem. The host's existing mount flags and read-only `/usr` stay intact.
+Containers, whole-device filesystems, non-GPT tables, encryption/device-mapper,
+LVM, RAID, multi-device Btrfs, and a root followed by another partition are
+skipped. Errors are logged as a failed service; this service is not required
+for normal boot and never deliberately reboots the machine.
+
+Inspect the backing mount, partition sizes and growth log after boot:
+
+```bash
+findmnt /sysroot
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS
+journalctl -b -u dcore-grow-root.service
+systemctl status dcore-grow-root.service
+sudo /usr/libexec/dcore/grow-root --dry-run
+```
+
+To reserve trailing disk space for another purpose, mask the service **before**
+booting the disk on a larger device. On an installed system:
+
+```bash
+sudo systemctl mask dcore-grow-root.service
+# Re-enable and retry later:
+sudo systemctl unmask dcore-grow-root.service
+sudo systemctl enable dcore-grow-root.service
+sudo systemctl restart dcore-grow-root.service
+```
+
+For an offline disk, during the SSH-key provisioning mount procedure above,
+create `/work/deployment/etc/systemd/system/dcore-grow-root.service` as a symlink
+to `/dev/null` before unmounting the deployment. This prevents its first-boot
+growth too.
+
+To test expansion under QEMU, stop the VM and enlarge its writable overlay:
+
+```bash
+qemu-img resize dcore-test.qcow2 20G
+```
+
+Then rerun QEMU and inspect the growth log and `df -h /sysroot`. A further disk
+expansion should be picked up after the next boot. Do not run `qemu-img resize`
+while QEMU is using the image. With an imported Incus release, expand the root
+volume, then reboot:
+
+```bash
+incus config device override dcore-release root size=20GiB
+incus restart dcore-release
+```
+
+If `root` was already overridden locally, use
+`incus config device set dcore-release root size=20GiB` instead. For an OCI
+installation created by our helper, its OS disk is a separate custom volume:
+
+```bash
+incus stop dcore-test
+incus storage volume set default dcore-test-boot size=20GiB
+incus start dcore-test
+```
 
 ## Weekly automatic image updates
 
@@ -688,7 +788,8 @@ mounted filesystems. ZFS pool trimming is separate: opt in with
 
 ZFS is intended for data pools, including Incus storage. ZFS as the bootc root
 filesystem is not configured. The image builds and checks its ZFS module before
-publishing; Secure Boot requires a separate trusted module-signing setup.
+publishing; trusted module signing and key enrollment are not configured, so
+Secure Boot must remain disabled.
 Zabbly's `/opt/incus` payload is kept in `/usr/lib/opt/incus`, with `/opt` pointing
 to `/usr/lib/opt` so its original paths continue to work and update atomically.
 Use `/var/opt` for locally installed mutable software.

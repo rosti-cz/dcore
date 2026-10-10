@@ -34,7 +34,7 @@ case "$(dpkg --print-architecture)" in
 esac
 apt-get update
 apt-get install -y --no-install-recommends \
-    btrfs-progs bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
+    btrfs-progs cloud-guest-utils gdisk python3 bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
     "linux-image-${kernel_arch}" "linux-headers-${kernel_arch}" \
     netplan.io libnss-resolve libnss-myhostname openssh-server skopeo \
     systemd systemd-sysv systemd-boot systemd-boot-efi systemd-resolved \

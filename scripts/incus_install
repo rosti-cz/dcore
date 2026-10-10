@@ -11,7 +11,7 @@ Usage: incus_install NAME [OPTIONS]
   --profile PROFILE    Network/device profile (default default)
   --cpu N              CPUs (default 2)
   --memory SIZE        RAM (default 4GiB)
-  --disk SIZE          OS disk (default 32GiB; cannot shrink release artifacts)
+  --disk SIZE          OS disk (default 10GiB; cannot shrink release artifacts)
   --ssh-key PATH       Optional existing OpenSSH public key
   --timeout SECONDS    Guest-agent wait timeout (default 600)
   --keep-on-failure    Preserve created VMs/volumes for debugging on failure
@@ -25,7 +25,7 @@ HELP
 name=$1; shift
 image=ghcr.io/rosti-cz/dcore:trixie
 release=; debian=trixie; pool=default; profile=default
-cpu=2; memory=4GiB; disk=32GiB; ssh_key=; timeout=600; image_set=false; keep_on_failure=false
+cpu=2; memory=4GiB; disk=10GiB; ssh_key=; timeout=600; image_set=false; keep_on_failure=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help|-h) usage; exit 0 ;;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh fstrim.timer
+systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh fstrim.timer dcore-grow-root.service
 # Disable all competing image/APT update schedules, including upstream defaults.
 for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updates.timer apt-daily.timer apt-daily-upgrade.timer; do
     if [[ -f "/usr/lib/systemd/system/$unit" ]]; then systemctl --root=/ disable "$unit"; fi

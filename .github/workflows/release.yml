@@ -102,7 +102,7 @@ jobs:
       - name: Build raw, QEMU and Incus artifacts
         run: |
           sudo scripts/build-disk-images.sh "$SOURCE_IMAGE" "$IMAGE:$DEBIAN_RELEASE" \
-            "$RELEASE_TAG" "$DEBIAN_RELEASE" "$GITHUB_WORKSPACE/dist" 32G
+            "$RELEASE_TAG" "$DEBIAN_RELEASE" "$GITHUB_WORKSPACE/dist" 10G
           sudo chown -R "$(id -u):$(id -g)" dist
       - name: Upload artifacts to the triggering release
         env:

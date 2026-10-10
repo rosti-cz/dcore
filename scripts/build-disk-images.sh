@@ -3,7 +3,7 @@
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 IMAGE@sha256:DIGEST TRACKING_IMAGE RELEASE_TAG DEBIAN_RELEASE OUTPUT_DIR [DISK_SIZE=32G]"
+    echo "Usage: $0 IMAGE@sha256:DIGEST TRACKING_IMAGE RELEASE_TAG DEBIAN_RELEASE OUTPUT_DIR [DISK_SIZE=10G]"
     echo "Optional local customization: SSH_PUBLIC_KEY=/absolute/path/to/key.pub"
 }
 [[ ${1:-} != --help ]] || { usage; exit 0; }
@@ -13,14 +13,14 @@ tracking_image=$2
 release_tag=$3
 debian_release=$4
 output_dir=$5
-disk_size=${6:-32G}
+disk_size=${6:-10G}
 [[ $EUID -eq 0 ]] || { echo 'Run this builder as root (privileged installation is required).' >&2; exit 1; }
 [[ $(uname -m) == x86_64 ]] || { echo 'Only amd64 disk images are supported.' >&2; exit 1; }
 [[ $source_image =~ ^[a-z0-9./:_-]+@sha256:[a-f0-9]{64}$ ]] || { echo 'Source must be a registry image pinned by SHA256 digest.' >&2; exit 2; }
 [[ $tracking_image =~ ^[a-z0-9./_-]+:[a-zA-Z0-9._-]+$ ]] || { echo 'Invalid tracking image reference.' >&2; exit 2; }
 [[ $release_tag =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$ ]] || { echo 'Release tags must be filename-safe (letters, numbers, dot, underscore, dash; max 80 characters).' >&2; exit 2; }
 [[ $debian_release =~ ^[a-z][a-z0-9-]*$ ]] || { echo 'Invalid Debian release.' >&2; exit 2; }
-[[ $disk_size =~ ^[1-9][0-9]*G$ ]] || { echo 'Disk size must be a whole number of GiB, e.g. 32G.' >&2; exit 2; }
+[[ $disk_size =~ ^[1-9][0-9]*G$ ]] || { echo 'Disk size must be a whole number of GiB, e.g. 10G.' >&2; exit 2; }
 for tool in podman qemu-img python3 tar xz sha256sum truncate; do
     command -v "$tool" >/dev/null || { echo "Missing tool: $tool" >&2; exit 1; }
 done

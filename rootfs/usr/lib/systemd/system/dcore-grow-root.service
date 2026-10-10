@@ -1,0 +1,20 @@
+[Unit]
+Description=Grow the last root partition and its filesystem to fill the disk
+Documentation=https://github.com/rosti-cz/dcore
+After=local-fs.target
+Before=multi-user.target
+ConditionVirtualization=!container
+ConditionPathIsMountPoint=/sysroot
+ConditionPathExists=|/run/ostree-booted
+ConditionKernelCommandLine=|composefs
+ConditionKernelCommandLine=|composefs.digest
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/dcore/grow-root
+RemainAfterExit=yes
+PrivateMounts=yes
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

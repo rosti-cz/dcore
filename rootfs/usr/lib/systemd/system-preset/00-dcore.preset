@@ -5,3 +5,4 @@ disable apt-daily.timer
 disable apt-daily-upgrade.timer
 enable systemd-timesyncd.service
 enable fstrim.timer
+enable dcore-grow-root.service

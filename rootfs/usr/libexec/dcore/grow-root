@@ -1,0 +1,216 @@
+#!/usr/bin/python3
+"""Grow only the final GPT partition backing bootc's /sysroot filesystem."""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+class Skip(Exception):
+    pass
+
+
+def log(message):
+    print(f"dcore-grow-root: {message}", flush=True)
+
+
+def command(*args, allowed=(0,)):
+    result = subprocess.run(args, text=True, capture_output=True, check=False)
+    if result.returncode not in allowed:
+        raise RuntimeError(f"{' '.join(args)} exited {result.returncode}: {result.stderr.strip()} {result.stdout.strip()}")
+    return result
+
+
+def table(disk):
+    data = json.loads(command("sfdisk", "--json", disk).stdout)["partitiontable"]
+    if data.get("label") != "gpt" or data.get("unit") != "sectors":
+        raise Skip("root disk does not have a supported GPT partition table")
+    return data
+
+
+def device_id(device):
+    value = os.stat(device)
+    if not stat.S_ISBLK(value.st_mode):
+        raise Skip(f"{device} is not a block device")
+    return value.st_rdev
+
+
+def root_device(mount):
+    source = mount["source"].split("[", 1)[0]
+    if source.startswith("/dev/") and os.path.exists(source):
+        return os.path.realpath(source)
+    # /dev/root may disappear after switch-root. Btrfs's anonymous mount device
+    # cannot use this fallback, so it must have a resolvable source above.
+    candidate = f"/dev/block/{mount['maj:min']}"
+    if os.path.exists(candidate):
+        return os.path.realpath(candidate)
+    raise Skip("cannot resolve the root filesystem's backing block device")
+
+
+def layout(disk, root):
+    data = table(disk)
+    partitions = sorted(data.get("partitions", []), key=lambda p: p["start"])
+    root_id = device_id(root)
+    matches = [p for p in partitions if device_id(p["node"]) == root_id]
+    if len(matches) != 1 or not partitions:
+        raise Skip("root partition cannot be identified unambiguously")
+    previous_end = 0
+    sectorsize = int(data["sectorsize"])
+    disk_size = int(command("blockdev", "--getsize64", disk).stdout)
+    for partition in partitions:
+        start, size = int(partition["start"]), int(partition["size"])
+        if start < previous_end or start <= 0 or size <= 0 or (start + size) * sectorsize > disk_size:
+            raise Skip("partition table has overlapping or out-of-bounds entries")
+        previous_end = start + size
+    if matches[0] != partitions[-1]:
+        raise Skip("root is not the physically last partition; leaving disk unchanged")
+    return data, matches[0], disk_size
+
+
+def btrfs_device(mountpoint, root):
+    output = command("btrfs", "filesystem", "show", "--raw", mountpoint).stdout
+    total = re.search(r"Total devices\s+(\d+)", output)
+    devices = re.findall(r"devid\s+(\d+)\s+size\s+(\d+).*?\spath\s+(.+)", output)
+    if not total or int(total[1]) != 1 or len(devices) != 1:
+        raise Skip("multi-device or incomplete Btrfs filesystem is unsupported")
+    devid, size, path = devices[0]
+    if device_id(path.strip()) != device_id(root):
+        raise Skip("Btrfs device does not match the root partition")
+    if int(size) > int(command("blockdev", "--getsize64", root).stdout):
+        raise Skip("Btrfs filesystem exceeds partition size; refusing possible shrink")
+    return devid
+
+
+def grow(dry_run):
+    result = command("findmnt", "--json", "--mountpoint", "/sysroot", "--output", "SOURCE,FSTYPE,OPTIONS,MAJ:MIN", allowed=(0, 1))
+    if result.returncode == 1:
+        raise Skip("/sysroot is not a mount point")
+    mounts = json.loads(result.stdout).get("filesystems", [])
+    if len(mounts) != 1:
+        raise Skip("root mount cannot be identified unambiguously")
+    mount = mounts[0]
+    filesystem = mount["fstype"]
+    if filesystem not in ("ext4", "btrfs", "xfs"):
+        raise Skip(f"unsupported backing filesystem: {filesystem}")
+    root = root_device(mount)
+    identity = device_id(root)
+    sysdevice = Path(f"/sys/dev/block/{os.major(identity)}:{os.minor(identity)}").resolve(strict=True)
+    if not (sysdevice / "partition").is_file():
+        raise Skip("root is not a plain partition (whole devices, LVM, encryption and RAID are unsupported)")
+    number = (sysdevice / "partition").read_text().strip()
+    disk = f"/dev/{sysdevice.parent.name}"
+    # Device-mapper partitions can have a parent too; reject layered disk types.
+    disk_type = command("lsblk", "--nodeps", "--noheadings", "--output", "TYPE", disk).stdout.strip()
+    if disk_type not in ("disk", "loop"):
+        raise Skip(f"unsupported parent device type: {disk_type}")
+    if any((sysdevice / "holders").iterdir()):
+        raise Skip("root partition has a layered device holder")
+    before, original, disk_size = layout(disk, root)
+    devid = btrfs_device("/sysroot", root) if filesystem == "btrfs" else None
+    log(f"backing root is {root}, {filesystem}, partition {number} on {disk}")
+    if dry_run:
+        result = command("growpart", "--dry-run", disk, number, allowed=(0, 1))
+        log(result.stdout.strip() or "partition already fills available space")
+        log(f"would ensure {filesystem} fills the partition; no disk changes made")
+        return
+
+    # A writable bind in a private namespace preserves host mount flags and
+    # /usr's read-only composefs mount. Prove it is writable before editing GPT.
+    writable = tempfile.mkdtemp(prefix="dcore-grow-root-", dir="/run")
+    try:
+        command("mount", "--bind", "/sysroot", writable)
+        try:
+            command("mount", "-o", "remount,bind,rw", writable)
+            end = (original["start"] + original["size"]) * int(before["sectorsize"])
+            if disk_size - end >= 1024 * 1024:
+                # Images copied to larger disks have a backup GPT at the old end.
+                command("sgdisk", "--move-second-header", disk)
+                probe = command("growpart", "--dry-run", disk, number, allowed=(0, 1))
+                if probe.returncode == 0:
+                    changed = command("growpart", disk, number)
+                    log(changed.stdout.strip())
+                else:
+                    log("partition already fills available space")
+            else:
+                log("no significant trailing space; checking filesystem size")
+            after, current, _ = layout(disk, root)
+            if after.get("id") != before.get("id"):
+                raise RuntimeError("disk UUID changed unexpectedly")
+            for entry in before["partitions"]:
+                updated = next(p for p in after["partitions"] if p["node"] == entry["node"])
+                expected = dict(entry)
+                if entry == original:
+                    if updated["size"] < entry["size"]:
+                        raise RuntimeError("root partition unexpectedly shrank")
+                    expected["size"] = updated["size"]
+                if updated != expected:
+                    raise RuntimeError("partition identity or unrelated partition changed unexpectedly")
+            expected_size = current["size"] * int(after["sectorsize"])
+            actual_size = int(command("blockdev", "--getsize64", root).stdout)
+            if actual_size != expected_size:
+                command("partx", "--update", "--nr", number, disk)
+                actual_size = int(command("blockdev", "--getsize64", root).stdout)
+                if actual_size != expected_size:
+                    raise RuntimeError("kernel has not accepted the new partition size; filesystem growth deferred until next boot")
+            # Always retry filesystem growth, including after a prior interrupted
+            # run that enlarged the partition but left the filesystem unchanged.
+            if filesystem == "ext4":
+                # resize2fs selects the first matching mount, not our writable
+                # alias. Change it only inside this private mount namespace.
+                readonly = "ro" in mount["options"].split(",")
+                if readonly:
+                    command("mount", "-o", "remount,bind,rw", "/sysroot")
+                try:
+                    output = command("resize2fs", root)
+                finally:
+                    if readonly:
+                        command("mount", "-o", "remount,bind,ro", "/sysroot")
+            elif filesystem == "btrfs":
+                output = command("btrfs", "filesystem", "resize", f"{devid}:max", writable)
+            else:
+                output = command("xfs_growfs", "-d", writable)
+            log(output.stdout.strip() or output.stderr.strip() or "filesystem already fills partition")
+            log(f"complete: root partition is {actual_size} bytes; original mount permissions preserved")
+        finally:
+            command("umount", writable)
+    finally:
+        # Never recursively remove a mount point if unmounting failed.
+        try:
+            os.rmdir(writable)
+        except OSError:
+            log(f"temporary mount directory retained: {writable}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dry-run", action="store_true", help="inspect partition growth without changing disks")
+    parser.add_argument("--private-namespace", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error("run as root")
+    if not args.dry_run and not args.private_namespace:
+        # Isolate manual runs too, so a killed process cannot leave host mounts
+        # writable. The service additionally sets PrivateMounts=yes.
+        os.execvp("unshare", ["unshare", "--mount", "--propagation", "private",
+                              os.path.realpath(__file__), "--private-namespace"])
+    # Serialize manual invocations with the boot service.
+    with open("/run/dcore-grow-root.lock", "w", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            grow(args.dry_run)
+        except Skip as error:
+            log(f"skipped: {error}")
+        except (RuntimeError, OSError, ValueError, KeyError, StopIteration) as error:
+            log(f"failed: {error}; normal boot may continue; retry after correcting the problem")
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
