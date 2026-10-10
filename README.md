@@ -23,7 +23,7 @@ Release downloads are checked against upstream SHA-256 checksums.
 - System: bootc, OSTree, sudo, OpenSSH server, netplan, systemd-resolved,
   systemd-timesyncd (enabled), fstrim timer (enabled).
 - Storage: Debian ZFS (`zfsutils-linux`, `zfs-zed`, `zfs-dracut`, and
-  `zfs-dkms` compiled for the image kernel), parted, Btrfs, ext4, XFS and FAT utilities.
+  `zfs-dkms` compiled for the image kernel), parted, `btrfs-progs` (`btrfs`), ext4, XFS and FAT utilities.
 
 The full package/version inventory is `/usr/share/dcore/packages.tsv` inside
 an image. Backup-tool versions are recorded under `/usr/share/dcore` too.

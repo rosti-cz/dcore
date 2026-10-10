@@ -24,7 +24,7 @@ for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updat
         echo "Unexpected enabled update timer: $unit" >&2; exit 1
     fi
 done
-for tool in fish htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs bootc; do
+for tool in fish htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs bootc; do
     command -v "$tool" > /dev/null
 done
 test -x /usr/libexec/incus/incus-agent
@@ -32,7 +32,7 @@ test -x /usr/libexec/incus/incus-agent-setup
 test -s /usr/lib/udev/rules.d/60-incus-agent.rules
 systemd-analyze verify --man=no incus-agent.service
 grep -qx 'ExecStart=/usr/libexec/dcore/incus-agent' /usr/lib/systemd/system/incus-agent.service.d/10-host-agent.conf
-dpkg-query -W incus-agent zfs-dkms zfsutils-linux incus docker.io docker-compose systemd-timesyncd > /dev/null
+dpkg-query -W btrfs-progs incus-agent zfs-dkms zfsutils-linux incus docker.io docker-compose systemd-timesyncd > /dev/null
 incus --version
 LD_LIBRARY_PATH=/opt/incus/lib /opt/incus/bin/incusd --version
 LD_LIBRARY_PATH=/opt/incus/lib "/opt/incus/bin/qemu-system-$(uname -m)" --version
