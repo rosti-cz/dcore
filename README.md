@@ -24,6 +24,7 @@ Release downloads are checked against upstream SHA-256 checksums.
 - Incus guest agent and installers for Incus VMs and physical block devices.
 - ext4 by default, with Btrfs and XFS installer options; automatic root growth
   when the root partition is last and disk space follows it.
+- Designed for a single system disk; system-disk RAID is not currently supported.
 - Optional passphrase-protected LUKS2 root in `block_install`.
 - `core` administrator with passwordless sudo; installation SSH keys shared
   with root. Password-based SSH login is disabled.
@@ -1004,6 +1005,15 @@ linked to it, so package inspection and APT in derivative container builds work.
 On installed hosts `/usr` is read-only; use bootc for system updates.
 
 ## Time, storage and containers
+
+dcore is designed to be installed on a **single system disk**. RAID for the
+system/boot disk is not currently supported. The system disk supports optional
+**LUKS2 encryption** through `block_install --encrypt`.
+
+Separate data storage can use **ZFS or Btrfs**, with their own native RAID
+configurations or block devices backed by **LVM RAID or mdadm** arrays. Configure
+these data pools and filesystems independently of the system disk; the
+single-disk restriction applies to the system installation.
 
 `systemd-timesyncd.service` and Debian's weekly `fstrim.timer` are enabled in the
 image. Check after boot with `timedatectl timesync-status` and
