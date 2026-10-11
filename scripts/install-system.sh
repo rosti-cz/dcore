@@ -34,7 +34,7 @@ case "$(dpkg --print-architecture)" in
 esac
 apt-get update
 apt-get install -y --no-install-recommends \
-    cryptsetup systemd-cryptsetup build-essential procps file distrobox uidmap slirp4netns fuse-overlayfs passt libpam-systemd dbus-user-session openvswitch-switch openvswitch-common bird3 btrfs-progs cloud-guest-utils gdisk python3 bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
+    cryptsetup systemd-cryptsetup build-essential procps file distrobox uidmap slirp4netns fuse-overlayfs passt libpam-systemd dbus-user-session openvswitch-switch openvswitch-common btrfs-progs cloud-guest-utils gdisk python3 bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
     "linux-image-${kernel_arch}" "linux-headers-${kernel_arch}" \
     netplan.io libnss-resolve libnss-myhostname openssh-server skopeo \
     systemd systemd-sysv systemd-boot systemd-boot-efi systemd-resolved \

@@ -7,7 +7,6 @@ enable systemd-timesyncd.service
 enable fstrim.timer
 enable dcore-grow-root.service
 enable dcore-homebrew.service
-disable bird.service
 disable openvswitch-switch.service
 disable ovsdb-server.service
 disable ovs-vswitchd.service

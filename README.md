@@ -29,7 +29,7 @@ Release downloads are checked against upstream SHA-256 checksums.
   with root. Password-based SSH login is disabled.
 - Persistent Homebrew owned by core, with command paths for every user,
   including root, and Distrobox for development containers.
-- Open vSwitch and BIRD 3, ready for administrator configuration.
+- Open vSwitch, ready for administrator configuration.
 - Weekly automatic image updates and reboot, disabled until enabled by the user.
 - Time synchronization and scheduled filesystem trimming enabled by default.
 
@@ -45,8 +45,8 @@ Release downloads are checked against upstream SHA-256 checksums.
 - Containers: Incus (Zabbly stable), Incus guest-agent integration (Debian), Docker (`docker.io` and `docker-cli`),
   Docker Compose (`docker compose`), Podman, Distrobox, skopeo.
 - Package management: Homebrew, owned by the `core` user in persistent storage.
-- Routing and switching: Debian Open vSwitch (`openvswitch-switch`,
-  `openvswitch-common`) and BIRD 3 (`bird3`).
+- Switching: Debian Open vSwitch (`openvswitch-switch`,
+  `openvswitch-common`).
 - Backups: latest stable Rustic (`rustic`) and Restic (`restic`).
 - System: bootc, OSTree, sudo, OpenSSH server, netplan, systemd-resolved,
   systemd-timesyncd (enabled), fstrim timer (enabled).
@@ -124,24 +124,16 @@ Containers, Homebrew packages and caches consume persistent disk space; grow
 beyond the initial 10 GiB disk when using them extensively. These installations
 stay in `/var`; `/usr` remains managed by bootc and read-only.
 
-## Open vSwitch and BIRD 3
+## Open vSwitch
 
-Both are Debian packages. BIRD and Open vSwitch's switching service are disabled
-by default so an administrator can configure them before starting them. Netplan
+Open vSwitch is installed from Debian. Its switching service is disabled by
+default so an administrator can configure it before starting it. Netplan
 may start the OVS database service for cleanup even when switching is disabled;
 its database and logs live in persistent `/var`. For Open vSwitch:
 
 ```bash
 sudo systemctl enable --now openvswitch-switch.service
 sudo ovs-vsctl show
-```
-
-Configure `/etc/bird/bird.conf`, validate it, then enable BIRD:
-
-```bash
-sudo bird -p -c /etc/bird/bird.conf
-sudo systemctl enable --now bird.service
-sudo birdc show status
 ```
 
 ## Build and publish
@@ -822,7 +814,6 @@ parted --version
 ncdu --version
 distrobox --version
 ovs-vsctl --version
-bird --version
 getent passwd core
 sudo -u core -H brew --version
 stat -c '%U:%G %a %n' /home/linuxbrew/.linuxbrew
