@@ -117,10 +117,18 @@ network access:
 # Optional settings:
 ./scripts/incus_install dcore-other --image ghcr.io/rosti-cz/dcore:trixie \
   --profile default --cpu 4 --memory 8GiB --disk 48GiB
+# OCI installs can choose a different root filesystem:
+./scripts/incus_install dcore-btrfs --filesystem btrfs --pool default
+./scripts/incus_install dcore-xfs --filesystem xfs --pool default
 incus exec dcore-test -- bash
 incus list dcore-test
 incus exec dcore-test -- bootc status
 ```
+
+The root filesystem defaults to ext4. `--filesystem` accepts `ext4`, `btrfs`,
+and `xfs`; XFS automatically gets the native composefs allow-missing-verity
+option. Release imports retain their prebuilt ext4 filesystem, so `--release`
+with `--filesystem btrfs` or `xfs` is rejected before creating resources.
 
 The SSH public key is optional: the Incus guest agent provides administrator
 access. The script refuses existing resource names and never uses a host disk.
@@ -478,6 +486,64 @@ placeholder GPT BIOS partition. Use Ethernet with DHCP for the first boot;
 wireless networking and additional non-free device firmware are not configured.
 Have an existing public SSH key available on the live environment (for example
 on another USB drive). The private key stays on your administration machine.
+
+### Use the block-device installer
+
+From the cloned repository, `scripts/block_install` installs the current OCI
+image directly onto a USB drive, NVMe drive or SSD. Run it as root on an amd64
+Linux host or live Linux environment, outside containers. The host itself can
+be booted in BIOS mode; the resulting disk requires UEFI with Secure Boot off.
+The script does not reboot the host or modify its firmware boot entries.
+
+On Debian/Ubuntu, install the host tools and identify the destination:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y podman python3 openssh-client
+lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN,MOUNTPOINTS
+ls -l /dev/disk/by-id/
+```
+
+Choose a whole-disk `/dev/disk/by-id/` path (no `-partN` suffix). The script
+erases that entire disk after showing its model, serial and size and asking you
+to type `ERASE` followed by the exact destination path. Unmount its partitions
+and deactivate swap/storage mappings yourself first; the script refuses a busy
+or read-only disk. It also refuses containers and foreign mount namespaces,
+and detects claims from filesystems mounted only in another namespace. A disk
+of at least 10 GiB is recommended for the current image.
+
+```bash
+# Default root filesystem: ext4. Substitute your actual spare whole-disk path.
+sudo ./scripts/block_install /dev/disk/by-id/REPLACE_WITH_YOUR_USB_OR_SSD \
+  --ssh-key "$HOME/.ssh/id_ed25519.pub"
+
+# Other supported root filesystems:
+sudo ./scripts/block_install /dev/disk/by-id/REPLACE_WITH_YOUR_NVME \
+  --filesystem btrfs --ssh-key "$HOME/.ssh/id_ed25519.pub"
+sudo ./scripts/block_install /dev/disk/by-id/REPLACE_WITH_YOUR_SPARE_SSD \
+  --filesystem xfs --ssh-key "$HOME/.ssh/id_ed25519.pub"
+```
+
+`--image` selects another publicly pullable OCI reference. The SSH public key
+is required because this image has no default password or Incus agent access
+on bare metal. Only the public key is installed; keep your private key on the
+administration machine. XFS automatically uses `--allow-missing-verity`.
+The destination is rechecked after pulling the image, including its Linux disk
+sequence, so a replacement USB disk under the same `/dev/sdX` name is refused.
+
+Automation can supply `--confirm-device` with exactly the same path as `DEVICE`;
+it bypasses the interactive prompt while retaining all device checks:
+
+```bash
+TARGET_DISK=/dev/disk/by-id/REPLACE_WITH_YOUR_SPARE_DISK
+sudo ./scripts/block_install "$TARGET_DISK" \
+  --ssh-key "$HOME/.ssh/id_ed25519.pub" --confirm-device "$TARGET_DISK"
+```
+
+When the script finishes, boot the installed disk on the target hardware in
+UEFI mode, find its DHCP address, and connect with the matching private key.
+The manual installation procedure below performs the same bootc installation
+if you prefer individual commands.
 
 ### Install the current OCI image from live Linux
 

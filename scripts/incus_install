@@ -4,6 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'HELP'
 Usage: incus_install NAME [OPTIONS]
+  --filesystem TYPE    OCI root filesystem: ext4 (default), btrfs, xfs
   --image REF          OCI image (default ghcr.io/rosti-cz/dcore:trixie)
   --release TAG        Install a published GitHub release's Incus image instead
   --debian CODENAME    Release artifact variant (default trixie)
@@ -24,6 +25,7 @@ HELP
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
 name=$1; shift
 image=ghcr.io/rosti-cz/dcore:trixie
+filesystem=ext4
 release=; debian=trixie; pool=default; profile=default
 cpu=2; memory=4GiB; disk=10GiB; ssh_key=; timeout=600; image_set=false; keep_on_failure=false
 while [[ $# -gt 0 ]]; do
@@ -33,6 +35,7 @@ while [[ $# -gt 0 ]]; do
     esac
     [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
     case $1 in
+        --filesystem) filesystem=$2 ;;
         --image) image=$2; image_set=true ;; --release) release=$2 ;;
         --debian) debian=$2 ;; --pool) pool=$2 ;; --profile) profile=$2 ;;
         --cpu) cpu=$2 ;; --memory) memory=$2 ;; --disk) disk=$2 ;;
@@ -45,6 +48,14 @@ done
 [[ $debian =~ ^[a-z][a-z0-9-]*$ && $cpu =~ ^[1-9][0-9]*$ && $timeout =~ ^[1-9][0-9]*$ ]] || exit 2
 [[ -z $release || $release =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || exit 2
 [[ -z $release || $image_set == false ]] || { echo '--release and --image are mutually exclusive' >&2; exit 2; }
+case $filesystem in
+    ext4|btrfs|xfs) ;;
+    *) echo '--filesystem must be ext4, btrfs, or xfs' >&2; exit 2 ;;
+esac
+[[ -z $release || $filesystem == ext4 ]] || {
+    echo 'Release disks are prebuilt ext4 images; use OCI mode to select btrfs or xfs' >&2
+    exit 2
+}
 for command in incus curl jq sha256sum; do
     command -v "$command" >/dev/null || { echo "Required command missing: $command" >&2; exit 1; }
 done
@@ -141,10 +152,12 @@ else
         key_args=(--root-ssh-authorized-keys /run/dcore-install.pub)
     fi
     incus exec "$helper" -- podman pull "$image"
+    filesystem_args=(--filesystem "$filesystem")
+    if [[ $filesystem == xfs ]]; then filesystem_args+=(--allow-missing-verity); fi
     incus exec "$helper" -- podman run --rm --pull=never --privileged --pid=host --ipc=host \
         --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
         "${key_mount[@]}" "$image" bootc install to-disk /dev/disk/by-id/virtio-incus_target \
-        --filesystem ext4 --composefs-backend --bootloader systemd --disable-selinux \
+        "${filesystem_args[@]}" --composefs-backend --bootloader systemd --disable-selinux \
         --generic-image --target-imgref "$image" "${key_args[@]}" --karg console=ttyS0,115200n8
     incus stop "$helper"
     incus config device remove "$helper" target

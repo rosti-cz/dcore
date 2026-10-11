@@ -11,3 +11,5 @@ dist/
 *.qcow2
 *.raw
 *.raw.xz
+
+__pycache__/

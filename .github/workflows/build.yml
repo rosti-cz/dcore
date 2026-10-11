@@ -24,6 +24,10 @@ jobs:
       incus_channel: ${{ steps.config.outputs.incus_channel }}
     steps:
       - uses: actions/checkout@v7
+      - name: Test installer filesystem selection and disk safeguards
+        run: |
+          sudo modprobe loop
+          sudo python3 tests/test-installers.py
       - id: config
         name: Read Debian release configuration
         run: |

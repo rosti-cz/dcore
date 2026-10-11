@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Provision an explicitly selected, unused whole disk; never reboot the host.
+set -euo pipefail
+usage() {
+    cat <<'HELP'
+Usage: sudo block_install DEVICE --ssh-key PUBLIC_KEY [OPTIONS]
+  DEVICE                 Whole USB/NVMe/SSD disk; prefer /dev/disk/by-id/...
+  --filesystem TYPE      Root filesystem: ext4 (default), btrfs, xfs
+  --image REF            OCI image (default ghcr.io/rosti-cz/dcore:trixie)
+  --ssh-key PATH         Required existing OpenSSH public key for root access
+  --confirm-device PATH  Noninteractive erase confirmation; must equal DEVICE
+  --help                 Show this help
+Erases the selected whole disk. Refuses partitions, mounted/swap/mapped/read-only
+storage, containers, and devices replaced during installation preparation.
+Run on an amd64 Linux host with sudo/root, Podman, Python3, OpenSSH client,
+util-linux and systemd-detect-virt. The stock flow needs a public OCI image.
+Creates a portable UEFI disk (target Secure Boot disabled); no host reboot or
+firmware boot-entry changes. A destination of at least 10 GiB is recommended.
+HELP
+}
+[[ ${1:-} != --help && ${1:-} != -h ]] || { usage; exit 0; }
+[[ $# -gt 0 ]] || { usage >&2; exit 2; }
+requested_device=$1; shift
+filesystem=ext4; image=ghcr.io/rosti-cz/dcore:trixie; ssh_key=; confirmation_device=
+while [[ $# -gt 0 ]]; do
+    case $1 in --help|-h) usage; exit 0 ;; esac
+    [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
+    case $1 in
+        --filesystem) filesystem=$2 ;;
+        --image) image=$2 ;;
+        --ssh-key) ssh_key=$2 ;;
+        --confirm-device) confirmation_device=$2 ;;
+        *) echo "Unknown option: $1" >&2; exit 2 ;;
+    esac
+    shift 2
+done
+case $filesystem in
+    ext4|btrfs|xfs) ;;
+    *) echo '--filesystem must be ext4, btrfs, or xfs' >&2; exit 2 ;;
+esac
+[[ $EUID -eq 0 ]] || { echo 'Run this installer with sudo or as root.' >&2; exit 1; }
+[[ $(uname -m) == x86_64 ]] || { echo 'This installer currently supports amd64 UEFI images.' >&2; exit 1; }
+for tool in podman python3 lsblk realpath ssh-keygen systemd-detect-virt sync; do
+    command -v "$tool" >/dev/null || { echo "Required command missing: $tool" >&2; exit 1; }
+done
+if systemd-detect-virt --quiet --container || [[ -e /.dockerenv || -e /run/.containerenv ]]; then
+    echo 'Run on the Linux host or a live Linux environment, outside containers.' >&2; exit 1
+fi
+[[ -n $ssh_key && -f $ssh_key ]] || { echo '--ssh-key must name an existing public key.' >&2; exit 2; }
+ssh_key=$(realpath -- "$ssh_key")
+python3 - "$ssh_key" <<'PYKEY'
+from pathlib import Path
+import sys
+lines=[line.strip() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip() and not line.lstrip().startswith('#')]
+if not lines or not all(line.startswith(('ssh-', 'ecdsa-', 'sk-')) for line in lines):
+    sys.exit('Expected an OpenSSH public key, never a private key.')
+PYKEY
+ssh-keygen -l -f "$ssh_key" >/dev/null || { echo 'Invalid SSH public key.' >&2; exit 2; }
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+device=$(realpath -- "$requested_device")
+identity=$(python3 "$script_dir/lib/check-block-device.py" "$device")
+lsblk -o NAME,SIZE,MODEL,SERIAL,TRAN,TYPE,MOUNTPOINTS "$device"
+printf '\nAll data on %s (%s) will be erased. Filesystem: %s\n' "$requested_device" "$device" "$filesystem"
+if [[ -n $confirmation_device ]]; then
+    [[ $confirmation_device == "$requested_device" ]] || { echo '--confirm-device must exactly match DEVICE.' >&2; exit 2; }
+else
+    [[ -t 0 ]] || { echo 'A terminal confirmation is required; automation must use --confirm-device DEVICE.' >&2; exit 2; }
+    read -r -p "Type ERASE $requested_device to continue: " confirmation
+    [[ $confirmation == "ERASE $requested_device" ]] || { echo 'Cancelled; disk unchanged.' >&2; exit 1; }
+fi
+podman pull "$image"
+# Recheck after downloading: a disk may have been mounted, activated or unplugged.
+[[ $(realpath -- "$requested_device") == "$device" ]] || { echo 'Destination path changed; disk unchanged.' >&2; exit 1; }
+current_identity=$(python3 "$script_dir/lib/check-block-device.py" "$device")
+[[ $current_identity == "$identity" ]] || { echo 'Destination identity or size changed; disk unchanged.' >&2; exit 1; }
+filesystem_args=(--filesystem "$filesystem")
+if [[ $filesystem == xfs ]]; then filesystem_args+=(--allow-missing-verity); fi
+podman run --rm --pull=never --privileged --pid=host --ipc=host \
+    --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
+    -v "$ssh_key:/run/dcore-install.pub:ro" "$image" \
+    bootc install to-disk "$device" --wipe "${filesystem_args[@]}" \
+    --composefs-backend --bootloader systemd --disable-selinux --generic-image \
+    --target-imgref "$image" --root-ssh-authorized-keys /run/dcore-install.pub \
+    --karg console=tty0
+sync
+printf '\nInstalled %s with %s on %s.\nBoot it in UEFI mode with Secure Boot disabled; SSH as root using the matching private key.\nThe current host has not been rebooted.\n' "$image" "$filesystem" "$device"
