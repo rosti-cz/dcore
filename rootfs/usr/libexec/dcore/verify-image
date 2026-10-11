@@ -11,7 +11,7 @@ test -s "/usr/lib/modules/${kernel}/initramfs.img"
 modinfo -k "$kernel" zfs > /dev/null
 initramfs="/usr/lib/modules/${kernel}/initramfs.img"
 modules=$(lsinitrd -m "$initramfs")
-for module in bootc ostree zfs crypt systemd-cryptsetup dcore-grow-root; do
+for module in bootc ostree zfs crypt systemd-cryptsetup tpm2-tss dcore-grow-root; do
     grep -qx "$module" <<< "$modules"
 done
 grow_hook=$(lsinitrd -f usr/lib/systemd/system/dcore-grow-luks-root.service "$initramfs")
@@ -31,7 +31,7 @@ for unit in openvswitch-switch.service ovsdb-server.service ovs-vswitchd.service
     state=$(systemctl --root=/ is-enabled "$unit" 2>/dev/null || true)
     [[ $state == disabled || $state == static ]]
 done
-for tool in cryptsetup fish htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs growpart sgdisk resize2fs xfs_growfs sfdisk partx findmnt unshare distrobox distrobox-create newuidmap newgidmap slirp4netns fuse-overlayfs pasta ovs-vsctl ovs-vswitchd brew bootc; do
+for tool in just ujust tpm2 systemd-cryptenroll cryptsetup fish htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs growpart sgdisk resize2fs xfs_growfs sfdisk partx findmnt unshare distrobox distrobox-create newuidmap newgidmap slirp4netns fuse-overlayfs pasta ovs-vsctl ovs-vswitchd brew bootc; do
     command -v "$tool" > /dev/null
 done
 test -x /usr/libexec/incus/incus-agent
@@ -39,6 +39,13 @@ test -x /usr/libexec/incus/incus-agent-setup
 test -s /usr/lib/udev/rules.d/60-incus-agent.rules
 systemd-analyze verify --man=no incus-agent.service
 grep -qx 'ExecStart=/usr/libexec/dcore/incus-agent' /usr/lib/systemd/system/incus-agent.service.d/10-host-agent.conf
+for unit in incus.socket incus-startup.service incus-lxcfs.service; do
+    [[ $(systemctl --root=/ is-enabled "$unit" 2>/dev/null || true) == disabled ]]
+done
+just --justfile /usr/share/dcore/justfile --list
+for tool in admin install/block_install install/lib/check-block-device.py install/lib/install-encrypted.py; do
+    test -f "/usr/libexec/dcore/$tool"
+done
 test -x /usr/libexec/dcore/grow-root
 test -s /usr/share/dcore/homebrew-seed.tar.zst
 getent passwd core > /dev/null

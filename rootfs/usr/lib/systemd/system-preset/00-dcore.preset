@@ -10,3 +10,7 @@ enable dcore-homebrew.service
 disable openvswitch-switch.service
 disable ovsdb-server.service
 disable ovs-vswitchd.service
+disable incus.service
+disable incus.socket
+disable incus-startup.service
+disable incus-lxcfs.service

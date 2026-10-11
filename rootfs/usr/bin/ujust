@@ -1,0 +1,3 @@
+#!/bin/sh
+# Always use the image's command runner and system Justfile.
+exec /usr/bin/just --justfile /usr/share/dcore/justfile --working-directory /usr/share/dcore "$@"

@@ -1,0 +1,296 @@
+#!/usr/bin/python3
+"""Interactive dcore administration; immutable recipes, persistent host settings."""
+import argparse
+import importlib.machinery
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import subprocess
+import sys
+import tempfile
+import types
+
+COMMANDS = ('change-luks-password', 'enroll-tpm', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus')
+INSTALLER = Path('/usr/libexec/dcore/install/block_install')
+TIMER_DROPIN = Path('/etc/systemd/system/dcore-update.timer.d/20-ujust.conf')
+CORE_SSH = Path('/var/home/core/.ssh')
+ROOT_SSH = Path('/root/.ssh')
+INCUS_UNITS = ('incus-startup.service', 'incus.socket', 'incus.service', 'incus-lxcfs.service')
+
+
+def run(*args, capture=False, check=True, **kwargs):
+    return subprocess.run(args, text=True, capture_output=capture, check=check, **kwargs)
+
+
+def tty():
+    if not sys.stdin.isatty():
+        raise ValueError('This command needs an interactive terminal; no changes made.')
+
+
+def approve(message):
+    return input(message + ' [y/N] ').strip().lower() in ('y', 'yes')
+
+
+def choose(title, options):
+    print(title)
+    for index, option in enumerate(options, 1):
+        print(f'  {index}. {option}')
+    answer = input('Number (Enter to cancel): ').strip()
+    if not answer:
+        return None
+    if not answer.isdecimal() or not 1 <= int(answer) <= len(options):
+        raise ValueError('Invalid selection; no changes made.')
+    return int(answer) - 1
+
+
+def load_module(path, name):
+    module = types.ModuleType(name)
+    importlib.machinery.SourceFileLoader(name, str(path)).exec_module(module)
+    return module
+
+
+def booted_image():
+    status = json.loads(run('bootc', 'status', '--format=json', capture=True).stdout)
+    booted = status.get('status', {}).get('booted')
+    if not booted or not booted.get('image'):
+        raise ValueError('Run this command on an installed bootc system.')
+    image = booted['image']['image']
+    ref = image['image'] if isinstance(image, dict) else image
+    if not isinstance(ref, str) or not ref or ref.startswith('-'):
+        raise ValueError('Cannot determine the current OCI image reference.')
+    return ref
+
+
+def root_luks():
+    helper = load_module('/usr/libexec/dcore/grow-root', 'grow_root')
+    result = run('findmnt', '--json', '--mountpoint', '/sysroot', '--output', 'SOURCE,FSTYPE,OPTIONS,MAJ:MIN', capture=True)
+    mounts = json.loads(result.stdout).get('filesystems', [])
+    if len(mounts) != 1:
+        raise ValueError('Cannot identify the installed root filesystem.')
+    root = helper.root_device(mounts[0])
+    try:
+        partition, holder = helper.backing_partition(root)
+    except helper.Skip as error:
+        raise ValueError(str(error)) from error
+    if not holder:
+        return None
+    cmdline = Path('/proc/cmdline').read_text()
+    expected = helper.initrd_partition('dcore-root', cmdline)
+    if helper.device_id(expected) != helper.device_id(partition):
+        raise ValueError('Root does not use the supported dcore-root unlock layout.')
+    return partition
+
+
+def enroll_tpm():
+    tty()
+    partition = root_luks()
+    if partition is None:
+        print('Root is not on LUKS2; nothing to enroll.')
+        return
+    if not Path('/dev/tpmrm0').exists():
+        raise ValueError('No TPM2 resource-manager device found.')
+    pcr = run('tpm2_pcrread', 'sha256:7', capture=True).stdout
+    measured = re.search(r'7\s*:\s*0x([0-9a-fA-F]{64})', pcr)
+    if not measured or int(measured[1], 16) == 0:
+        raise ValueError('Firmware has not initialized SHA256 PCR 7; refusing an unenforced TPM policy.')
+    metadata = json.loads(run('cryptsetup', 'luksDump', '--dump-json-metadata', partition, capture=True).stdout)
+    existing = any(token.get('type') == 'systemd-tpm2' for token in metadata.get('tokens', {}).values())
+    # TPM-only slot wiping must never remove password/recovery slots.
+    tpm_slots = {str(slot) for token in metadata.get('tokens', {}).values()
+                 if token.get('type') == 'systemd-tpm2' for slot in token.get('keyslots', [])}
+    if not set(metadata.get('keyslots', {})) - tpm_slots:
+        raise ValueError('Keep a password or recovery slot before enrolling TPM automatic unlock.')
+    print(f'Root LUKS2 device: {partition}')
+    print('TPM unlock will be bound to PCR 7 (firmware Secure Boot policy).')
+    print('dcore currently requires Secure Boot disabled. This policy does not verify the boot image.')
+    print('Keep your existing password for recovery after TPM or firmware changes.')
+    if not approve('Replace the existing TPM enrollment?' if existing else 'Enroll TPM automatic unlocking?'):
+        print('Cancelled; enrollment unchanged.')
+        return
+    args = ['systemd-cryptenroll', '--tpm2-device=auto', '--tpm2-pcrs=7', '--tpm2-with-pin=no']
+    if existing:
+        args.append('--wipe-slot=tpm2')
+    run(*args, partition)
+    print('TPM enrolled. The next boot will try TPM unlock and retain password fallback.')
+
+
+def change_luks_password():
+    tty()
+    partition = root_luks()
+    if partition is None:
+        print('Root is not on LUKS2; no password to change.')
+        return
+    print(f'Changing the password of root LUKS2 device {partition}. TPM enrollment is preserved.')
+    run('cryptsetup', 'luksChangeKey', '--verify-passphrase', partition)
+    print('Root LUKS password changed.')
+
+
+def upgrade():
+    booted_image()
+    run('bootc', 'upgrade')
+    print('Upgrade check complete. If an update was staged, reboot to apply it: sudo systemctl reboot')
+
+
+def public_key(path):
+    if not path.is_file() or path.is_symlink():
+        return False
+    lines = [line.strip() for line in path.read_text().splitlines()
+             if line.strip() and not line.lstrip().startswith('#')]
+    if not lines or not all(line.startswith(('ssh-', 'ecdsa-', 'sk-')) for line in lines):
+        return False
+    return run('ssh-keygen', '-l', '-f', str(path), capture=True, check=False).returncode == 0
+
+
+def select_key():
+    selection = choose('Add SSH public keys from:', ['/root/.ssh', '/var/home/core/.ssh', 'Cancel installation'])
+    if selection is None or selection == 2:
+        print('Cancelled. An SSH public key is required for access to the installed server.')
+        return None
+    directory = ROOT_SSH if selection == 0 else CORE_SSH
+    keys = sorted({*directory.glob('*.pub'), directory / 'authorized_keys'})
+    keys = [path for path in keys if public_key(path)]
+    if not keys:
+        raise ValueError(f'No valid public keys found in {directory}; use ujust gen-sshkey or add authorized_keys first.')
+    selected = choose('Select public key file (private keys are never copied):', [str(path) for path in keys])
+    return keys[selected] if selected is not None else None
+
+
+def install():
+    tty()
+    image = booted_image()
+    checker = load_module(INSTALLER.parent / 'lib/check-block-device.py', 'block_check')
+    devices = json.loads(run('lsblk', '--json', '--paths', '--bytes', '--output',
+                             'NAME,TYPE,SIZE,MODEL,SERIAL,TRAN', capture=True).stdout)['blockdevices']
+    eligible = []
+    for disk in devices:
+        if disk['type'] != 'disk':
+            continue
+        try:
+            identity = checker.check(disk['name'])
+        except (ValueError, OSError, subprocess.CalledProcessError):
+            continue
+        eligible.append((disk, identity))
+    if not eligible:
+        raise ValueError('No unused whole drives available. Mounted, swap, mapped and read-only drives are excluded.')
+    selection = choose('Available destination drives (the chosen drive will be erased):',
+                       [f"{d['name']}  {int(d['size']) / 1024**3:.1f} GiB  {d.get('model') or ''}  serial={d.get('serial') or 'unknown'}  {d.get('tran') or ''}"
+                        for d, _ in eligible])
+    if selection is None:
+        return
+    disk, identity = eligible[selection]
+    key = select_key()
+    if key is None:
+        return
+    selected_fs = choose('Root filesystem:', ['ext4 (default)', 'btrfs', 'xfs'])
+    if selected_fs is None:
+        return
+    filesystem = ('ext4', 'btrfs', 'xfs')[selected_fs]
+    encrypt = approve('Encrypt the new system disk with LUKS2?')
+    # The block installer repeats its own typed ERASE confirmation and rechecks
+    # identity after pulling. Preserve the selected identity across these menus.
+    if checker.check(disk['name']) != identity:
+        raise ValueError('Drive identity changed while choosing options; installation cancelled.')
+    args = [str(INSTALLER), disk['name'], '--image', image, '--filesystem', filesystem, '--ssh-key', str(key)]
+    if encrypt:
+        args.append('--encrypt')
+    print(f"Installing {image} on {disk['name']}. The installer will now require typed erase confirmation.")
+    run(*args)
+
+
+def gen_sshkey():
+    account = pwd.getpwnam('core')
+    private = CORE_SSH / 'id_ed25519'
+    if os.path.lexists(private):
+        print(f'Existing key: {private}; nothing changed.')
+        public = private.with_suffix('.pub')
+        if public.is_file():
+            run('ssh-keygen', '-l', '-f', str(public))
+        return
+    tty()
+    CORE_SSH.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if CORE_SSH.is_symlink():
+        raise ValueError('Refusing a symlink for the core SSH directory.')
+    os.chown(CORE_SSH, account.pw_uid, account.pw_gid)
+    CORE_SSH.chmod(0o700)
+    print(f'Generating {private} as core. Choose an optional key passphrase at the SSH prompt.')
+    run('runuser', '-u', 'core', '--', 'ssh-keygen', '-t', 'ed25519', '-f', str(private), '-C', 'core@dcore')
+    print(f'Public key: {private}.pub')
+
+
+def enable_autoupgrade():
+    tty()
+    booted_image()
+    days = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+    selected = choose('Choose weekly maintenance day (local system time):', list(days))
+    if selected is None:
+        return
+    clock = input('Time HH:MM [04:00]: ').strip() or '04:00'
+    if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', clock):
+        raise ValueError('Invalid time; use HH:MM. No settings changed.')
+    calendar = f'{days[selected]} *-*-* {clock}:00'
+    run('systemd-analyze', 'calendar', calendar, capture=True)
+    print(f'Schedule: {calendar}, local time, without random delay.')
+    print('Automatic upgrades restart this server when a new image is applied.')
+    print('Missed schedules may run immediately when enabling the persistent timer.')
+    print('A LUKS root without working automatic TPM unlock needs its password at the console after reboot.')
+    if not approve('Approve automatic upgrades and server restarts?'):
+        print('Cancelled; automatic-upgrade settings unchanged.')
+        return
+    TIMER_DROPIN.parent.mkdir(parents=True, exist_ok=True)
+    contents = f'[Timer]\nOnCalendar=\nOnCalendar={calendar}\nRandomizedDelaySec=0\n'
+    fd, temporary = tempfile.mkstemp(prefix='.20-ujust-', dir=TIMER_DROPIN.parent)
+    try:
+        with os.fdopen(fd, 'w') as out:
+            out.write(contents)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, TIMER_DROPIN)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    run('systemctl', 'daemon-reload')
+    run('systemctl', 'enable', '--now', 'dcore-update.timer')
+    run('systemctl', 'list-timers', 'dcore-update.timer', '--no-pager')
+
+
+def enable_incus():
+    tty()
+    enabled = any(run('systemctl', 'is-enabled', unit, capture=True, check=False).stdout.strip()
+                  in ('enabled', 'enabled-runtime') for unit in INCUS_UNITS)
+    active = any(run('systemctl', 'is-active', '--quiet', unit, check=False).returncode == 0 for unit in INCUS_UNITS)
+    if enabled or active:
+        print('Disabling the Incus server can stop running instances.')
+        if not approve('Disable and stop the Incus server?'):
+            print('Cancelled; Incus unchanged.')
+            return
+        run('systemctl', 'disable', '--now', *INCUS_UNITS)
+        print('Incus server disabled.')
+    else:
+        if not approve('Enable and start the Incus server?'):
+            return
+        run('systemctl', 'enable', '--now', 'incus.socket', 'incus-lxcfs.service', 'incus-startup.service')
+        run('systemctl', 'start', 'incus.service')
+        print('Incus enabled. Configure it with: sudo incus admin init')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=COMMANDS)
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        os.execv('/usr/bin/sudo', ['sudo', '--', os.path.realpath(__file__), args.command])
+    os.environ['PATH'] = '/usr/sbin:/usr/bin:/sbin:/bin'
+    try:
+        globals()[args.command.replace('-', '_')]()
+    except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
+        print(f'ujust: {error}', file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print('Cancelled.', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

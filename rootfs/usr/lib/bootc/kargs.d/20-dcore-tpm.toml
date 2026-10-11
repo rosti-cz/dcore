@@ -1,0 +1,2 @@
+# Try enrolled TPM2 tokens, retaining normal password fallback.
+kargs = ["rd.luks.options=tpm2-device=auto"]

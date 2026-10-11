@@ -34,9 +34,9 @@ case "$(dpkg --print-architecture)" in
 esac
 apt-get update
 apt-get install -y --no-install-recommends \
-    cryptsetup systemd-cryptsetup build-essential procps file distrobox uidmap slirp4netns fuse-overlayfs passt libpam-systemd dbus-user-session openvswitch-switch openvswitch-common btrfs-progs cloud-guest-utils gdisk python3 bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
+    just tpm2-tools cryptsetup systemd-cryptsetup build-essential procps file distrobox uidmap slirp4netns fuse-overlayfs passt libpam-systemd dbus-user-session openvswitch-switch openvswitch-common btrfs-progs cloud-guest-utils gdisk python3 bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
     "linux-image-${kernel_arch}" "linux-headers-${kernel_arch}" \
-    netplan.io libnss-resolve libnss-myhostname openssh-server skopeo \
+    netplan.io libnss-resolve libnss-myhostname openssh-server skopeo wireguard \
     systemd systemd-sysv systemd-boot systemd-boot-efi systemd-resolved \
     systemd-timesyncd xfsprogs libostree-1-1 ostree dracut kmod podman sudo \
     zfs-dkms zfsutils-linux zfs-zed zfs-dracut incus incus-agent \

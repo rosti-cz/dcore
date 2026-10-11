@@ -1,0 +1,33 @@
+set shell := ["/bin/sh", "-eu", "-c"]
+
+# List dcore administration commands.
+default:
+    @/usr/bin/just --justfile /usr/share/dcore/justfile --list
+
+# Enroll TPM2 automatic unlocking for the LUKS2 system disk.
+enroll-tpm:
+    @/usr/libexec/dcore/admin enroll-tpm
+
+# Stage the newest tracked bootc image; reboot separately to apply it.
+upgrade:
+    @/usr/libexec/dcore/admin upgrade
+
+# Install dcore onto a selected unused whole disk.
+install:
+    @/usr/libexec/dcore/admin install
+
+# Generate an Ed25519 SSH key for core, preserving an existing key.
+gen-sshkey:
+    @/usr/libexec/dcore/admin gen-sshkey
+
+# Choose and approve a weekly image-update and reboot schedule.
+enable-autoupgrade:
+    @/usr/libexec/dcore/admin enable-autoupgrade
+
+# Enable the Incus server, or offer to disable it if already enabled.
+enable-incus:
+    @/usr/libexec/dcore/admin enable-incus
+
+# Change the root LUKS2 password while preserving TPM enrollment.
+change-luks-password:
+    @/usr/libexec/dcore/admin change-luks-password

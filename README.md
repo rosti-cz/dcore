@@ -31,6 +31,7 @@ Release downloads are checked against upstream SHA-256 checksums.
 - Persistent Homebrew owned by core, with command paths for every user,
   including root, and Distrobox for development containers.
 - Open vSwitch, ready for administrator configuration.
+- `ujust` administration commands for installation, upgrades, Incus, SSH keys and LUKS2/TPM management.
 - Weekly automatic image updates and reboot, disabled until enabled by the user.
 - Time synchronization and scheduled filesystem trimming enabled by default.
 
@@ -56,6 +57,56 @@ Release downloads are checked against upstream SHA-256 checksums.
 
 The full package/version inventory is `/usr/share/dcore/packages.tsv` inside
 an image. Backup-tool versions are recorded under `/usr/share/dcore` too.
+
+## Administration with ujust
+
+The image includes Debian's `just` command runner and a system Justfile at
+`/usr/share/dcore/justfile`. Run `ujust` to list commands from any directory.
+Privileged commands request sudo automatically; core has passwordless sudo.
+
+| Command | Behavior |
+| --- | --- |
+| `ujust enroll-tpm` | Enroll TPM2 automatic unlocking of the root LUKS2 partition, preserving password recovery. |
+| `ujust change-luks-password` | Interactively change the root LUKS2 password; TPM enrollment remains intact. |
+| `ujust upgrade` | Run `bootc upgrade` to stage an image update; reboot separately to apply it. |
+| `ujust install` | Select an unused whole drive, SSH public keys, filesystem and encryption, then confirm erasure and install the current image reference. |
+| `ujust gen-sshkey` | Generate `/var/home/core/.ssh/id_ed25519` as core, or report an existing key without replacing it. |
+| `ujust enable-autoupgrade` | Choose a weekly day/time in the system's local timezone and explicitly approve automatic upgrades and reboots. |
+| `ujust enable-incus` | Enable the Incus server, or offer to disable it when already enabled/running. |
+
+Installation reuses the block installer's disk identity and busy-device checks.
+Only validated public keys or `authorized_keys` from `/root/.ssh` or
+`/var/home/core/.ssh` are offered; private keys are never copied. The final
+installer requires typing `ERASE` followed by the destination path. An SSH
+public key is required for access to the installed server.
+
+SSH key generation asks for an optional passphrase using `ssh-keygen`'s normal
+prompt. LUKS password changes and TPM enrollment use the tools' own interactive
+password prompts; passwords are not put into command arguments or stored files.
+
+Automatic upgrades remain disabled until approved. The command writes its
+schedule under `/etc/systemd/system/dcore-update.timer.d/20-ujust.conf`, clears
+the original calendar and random delay, then enables the timer. Missed runs can
+trigger an immediate update. A new image is applied with a server reboot; an
+unchanged image does not reboot. A root requiring manual LUKS unlock needs
+console access after these reboots.
+
+The Incus server, startup service, socket activation and LXCFS are disabled by
+default. Enabling Incus starts them; initialize its configuration afterward with
+`sudo incus admin init`. Disabling it can stop running instances and requires
+confirmation. The Incus **guest agent** remains available independently.
+
+TPM enrollment supports dcore's direct LUKS2 `dcore-root` layout and requires a
+TPM2 resource-manager device with a nonzero SHA256 PCR 7 measurement. Enrollment
+refuses firmware that leaves this PCR uninitialized. The image includes TPM
+libraries, drivers and initramfs support. Boot tries enrolled TPM tokens with password fallback.
+Enrollment uses PCR 7, which tracks firmware Secure Boot policy and permits
+ordinary kernel/image updates without binding to a particular kernel hash.
+**Secure Boot is currently disabled in dcore: this TPM policy does not verify
+the boot image.** Confirm this limitation before enrollment and retain the
+existing password for recovery if the TPM or firmware policy changes. Existing
+TPM enrollment is replaced only after approval; password/recovery slots are
+preserved. See [systemd's TPM policy documentation](https://www.freedesktop.org/software/systemd/man/systemd-cryptenroll.html).
 
 ## Core user, Homebrew and Distrobox
 
@@ -139,9 +190,11 @@ sudo ovs-vsctl show
 
 ## Build and publish
 
-The [GitHub repository](https://github.com/rosti-cz/dcore) uses `main` as its
-default branch. The workflow builds every day at 02:23 UTC, on pushes to main, on pull requests, and
-on manual dispatch. Successful default-branch builds publish the same image to:
+The [GitHub repository](https://github.com/rosti-cz/dcore) automatically builds
+and publishes OCI images from the `main` branch every day at 02:23 UTC. Builds
+also run on pushes to `main`, on pull requests, and on manual dispatch.
+GitHub releases are only for distributing disk images; daily OCI builds do not
+require a release. Successful `main` builds publish the same image to:
 
 - `ghcr.io/rosti-cz/dcore:trixie`
 - `ghcr.io/rosti-cz/dcore:stable`
@@ -150,8 +203,7 @@ on manual dispatch. Successful default-branch builds publish the same image to:
 These daily tags describe **Debian releases**, not the maturity of the dcore
 project. `trixie` is Debian's codename; `stable` follows the Debian release
 selected by `stable_release`; `latest` is an alias for that same default stable
-Debian build. None of these tags imply that dcore is production-ready. Versioned
-OCI tags created for GitHub releases identify dcore project releases separately.
+Debian build. None of these tags imply that dcore is production-ready.
 
 The repository's `GITHUB_TOKEN` needs package write access (already requested by
 the workflow). Set the GHCR package to public if hosts should pull anonymously;
@@ -342,6 +394,8 @@ and [bootc bootloader support](https://github.com/bootc-dev/bootc/blob/v1.17.1/d
 
 ## GitHub release images
 
+GitHub releases distribute raw, QEMU QCOW2 and Incus disk images. OCI images are
+built automatically every day from `main`, independently of these releases.
 Publishing a GitHub release triggers a separate workflow that checks out the
 release's tag, builds every configured Debian variant for amd64, publishes a
 versioned OCI image, and installs that exact image digest into a fresh disk. It
@@ -639,8 +693,9 @@ sudo ./scripts/block_install /dev/disk/by-id/REPLACE_WITH_YOUR_SPARE_DISK \
 This creates a LUKS2 partition containing the root filesystem and persistent
 user/container data. The EFI partition, kernel and initramfs remain unencrypted.
 The passphrase is required at the console on **every boot**, including reboots
-triggered by automatic updates. No TPM unlocking or stored unlock key is
-configured. Ensure console access before enabling automatic reboots.
+triggered by automatic updates, unless TPM unlocking is enabled through
+`ujust enroll-tpm`. The installer itself does not enroll a TPM or store an
+unlock key. Ensure console access before enabling automatic reboots.
 The encrypted installer requires a destination of at least 10 GiB and an image
 with dcore's encryption tools and initramfs support; it checks these before
 formatting. The LUKS partition initially uses the remaining disk space. If you
@@ -776,7 +831,7 @@ networkctl status
 systemctl --failed
 modprobe zfs
 zfs version
-incus version
+incus --version
 docker compose version
 rustic --version
 restic version
@@ -862,6 +917,15 @@ boot used one normal password unlock, preserved a data sentinel and read-only
 `/usr`, and had no failed systemd units. The final image's opt-out test kept the
 original encrypted sizes after disk expansion. CI integration tests cover both
 growth stages, partial recovery, mount permissions, and non-final encrypted roots.
+
+Administration validation built the full image and passed all 15 command tests
+and nine Incus installer regression tests. A QEMU LUKS2 boot exercised SSH key
+generation/preservation, Incus enable/disable and automatic-update schedule
+approval/refusal. Software-TPM testing with an explicitly simulated firmware
+PCR 7 measurement verified enrollment, unattended reboot unlocking, password
+changes preserving the TPM token, and recovery with the new password after
+clearing the TPM. The simulated measurement exists only in the test fixture;
+physical TPM/firmware behavior remains unverified.
 
 ## Automatic root disk growth
 
@@ -1028,7 +1092,8 @@ Secure Boot must remain disabled.
 Zabbly's `/opt/incus` payload is kept in `/usr/lib/opt/incus`, with `/opt` pointing
 to `/usr/lib/opt` so its original paths continue to work and update atomically.
 Use `/var/opt` for locally installed mutable software.
-Initialize Incus on the installed host with `sudo incus admin init`.
+Enable Incus on the installed host with `ujust enable-incus`, then initialize it
+with `sudo incus admin init`.
 
 Debian bootc here is a community integration. CI checks image structure,
 maintenance defaults, kernel/ZFS artifacts, and tool executables; validate an

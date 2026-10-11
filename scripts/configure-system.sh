@@ -21,7 +21,7 @@ printf '[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStart
 # installed hosts whose locally modified /etc is preserved across image updates.
 install -d /usr/lib/sysusers.d
 {
-    for group in _ssh docker rdma; do
+    for group in _ssh docker rdma tss; do
         if getent group "$group" > /dev/null; then printf 'g %s -\n' "$group"; fi
     done
     if getent passwd dnsmasq > /dev/null; then
@@ -31,6 +31,9 @@ install -d /usr/lib/sysusers.d
         printf 'u dnsmasq -:%s "Service account" %s %s\n' "$primary_group" "$user_home" "$user_shell"
     fi
 } > /usr/lib/sysusers.d/10-dcore-extra.conf
+
+# dracut's TPM stack creates this account while generating the initramfs.
+printf 'g tss -\nu tss -:tss "TPM software stack" /var/lib/tpm /bin/false\n' > /usr/lib/sysusers.d/10-dcore-tss.conf
 
 # Debian's GPT-auto initrd root mount can fail with native composefs/systemd-boot.
 # Let bootc emit the filesystem UUID so dracut explicitly mounts the root disk.
@@ -77,3 +80,6 @@ systemctl --root=/ disable openvswitch-switch.service
 install -d /usr/lib/systemd/system/ovsdb-server.service.d
 printf 'd /var/lib/openvswitch 0755 root root -\nd /var/log/openvswitch 0755 root root -\n' > /usr/lib/tmpfiles.d/dcore-openvswitch.conf
 printf '[Unit]\nAfter=systemd-tmpfiles-setup.service\n' > /usr/lib/systemd/system/ovsdb-server.service.d/10-persistent-state.conf
+
+# Incus server activation is opt-in; the independently configured guest agent remains available.
+systemctl --root=/ disable incus.service incus.socket incus-startup.service incus-lxcfs.service
