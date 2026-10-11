@@ -31,7 +31,7 @@ Release downloads are checked against upstream SHA-256 checksums.
 - Persistent Homebrew owned by core, with command paths for every user,
   including root, and Distrobox for development containers.
 - Open vSwitch, ready for administrator configuration.
-- `ujust` administration commands for installation, upgrades, Incus, SSH keys and LUKS2/TPM management.
+- `djust` administration commands for installation, upgrades, Incus, SSH keys and LUKS2/TPM management.
 - Weekly automatic image updates and reboot, disabled until enabled by the user.
 - Time synchronization and scheduled filesystem trimming enabled by default.
 
@@ -58,21 +58,21 @@ Release downloads are checked against upstream SHA-256 checksums.
 The full package/version inventory is `/usr/share/dcore/packages.tsv` inside
 an image. Backup-tool versions are recorded under `/usr/share/dcore` too.
 
-## Administration with ujust
+## Administration with djust
 
 The image includes Debian's `just` command runner and a system Justfile at
-`/usr/share/dcore/justfile`. Run `ujust` to list commands from any directory.
+`/usr/share/dcore/justfile`. Run `djust` to list commands from any directory.
 Privileged commands request sudo automatically; core has passwordless sudo.
 
 | Command | Behavior |
 | --- | --- |
-| `ujust enroll-tpm` | Enroll TPM2 automatic unlocking of the root LUKS2 partition, preserving password recovery. |
-| `ujust change-luks-password` | Interactively change the root LUKS2 password; TPM enrollment remains intact. |
-| `ujust upgrade` | Run `bootc upgrade` to stage an image update; reboot separately to apply it. |
-| `ujust install` | Select an unused whole drive, SSH public keys, filesystem and encryption, then confirm erasure and install the current image reference. |
-| `ujust gen-sshkey` | Generate `/var/home/core/.ssh/id_ed25519` as core, or report an existing key without replacing it. |
-| `ujust enable-autoupgrade` | Choose a weekly day/time in the system's local timezone and explicitly approve automatic upgrades and reboots. |
-| `ujust enable-incus` | Enable the Incus server, or offer to disable it when already enabled/running. |
+| `djust enroll-tpm` | Enroll TPM2 automatic unlocking of the root LUKS2 partition, preserving password recovery. |
+| `djust change-luks-password` | Interactively change the root LUKS2 password; TPM enrollment remains intact. |
+| `djust upgrade` | Run `bootc upgrade` to stage an image update; reboot separately to apply it. |
+| `djust install` | Select an unused whole drive, SSH public keys, filesystem and encryption, then confirm erasure and install the current image reference. |
+| `djust gen-sshkey` | Generate `/var/home/core/.ssh/id_ed25519` as core, or report an existing key without replacing it. |
+| `djust enable-autoupgrade` | Choose a weekly day/time in the system's local timezone and explicitly approve automatic upgrades and reboots. |
+| `djust enable-incus` | Enable the Incus server, or offer to disable it when already enabled/running. |
 
 Installation reuses the block installer's disk identity and busy-device checks.
 Only validated public keys or `authorized_keys` from `/root/.ssh` or
@@ -694,7 +694,7 @@ This creates a LUKS2 partition containing the root filesystem and persistent
 user/container data. The EFI partition, kernel and initramfs remain unencrypted.
 The passphrase is required at the console on **every boot**, including reboots
 triggered by automatic updates, unless TPM unlocking is enabled through
-`ujust enroll-tpm`. The installer itself does not enroll a TPM or store an
+`djust enroll-tpm`. The installer itself does not enroll a TPM or store an
 unlock key. Ensure console access before enabling automatic reboots.
 The encrypted installer requires a destination of at least 10 GiB and an image
 with dcore's encryption tools and initramfs support; it checks these before
@@ -1092,7 +1092,7 @@ Secure Boot must remain disabled.
 Zabbly's `/opt/incus` payload is kept in `/usr/lib/opt/incus`, with `/opt` pointing
 to `/usr/lib/opt` so its original paths continue to work and update atomically.
 Use `/var/opt` for locally installed mutable software.
-Enable Incus on the installed host with `ujust enable-incus`, then initialize it
+Enable Incus on the installed host with `djust enable-incus`, then initialize it
 with `sudo incus admin init`.
 
 Debian bootc here is a community integration. CI checks image structure,

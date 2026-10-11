@@ -14,6 +14,7 @@ import types
 
 COMMANDS = ('change-luks-password', 'enroll-tpm', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus')
 INSTALLER = Path('/usr/libexec/dcore/install/block_install')
+# Preserve the original filename for existing host configurations.
 TIMER_DROPIN = Path('/etc/systemd/system/dcore-update.timer.d/20-ujust.conf')
 CORE_SSH = Path('/var/home/core/.ssh')
 ROOT_SSH = Path('/root/.ssh')
@@ -152,7 +153,7 @@ def select_key():
     keys = sorted({*directory.glob('*.pub'), directory / 'authorized_keys'})
     keys = [path for path in keys if public_key(path)]
     if not keys:
-        raise ValueError(f'No valid public keys found in {directory}; use ujust gen-sshkey or add authorized_keys first.')
+        raise ValueError(f'No valid public keys found in {directory}; use djust gen-sshkey or add authorized_keys first.')
     selected = choose('Select public key file (private keys are never copied):', [str(path) for path in keys])
     return keys[selected] if selected is not None else None
 
@@ -240,7 +241,7 @@ def enable_autoupgrade():
         return
     TIMER_DROPIN.parent.mkdir(parents=True, exist_ok=True)
     contents = f'[Timer]\nOnCalendar=\nOnCalendar={calendar}\nRandomizedDelaySec=0\n'
-    fd, temporary = tempfile.mkstemp(prefix='.20-ujust-', dir=TIMER_DROPIN.parent)
+    fd, temporary = tempfile.mkstemp(prefix='.20-djust-', dir=TIMER_DROPIN.parent)
     try:
         with os.fdopen(fd, 'w') as out:
             out.write(contents)
@@ -284,7 +285,7 @@ def main():
     try:
         globals()[args.command.replace('-', '_')]()
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
-        print(f'ujust: {error}', file=sys.stderr)
+        print(f'djust: {error}', file=sys.stderr)
         return 1
     except (EOFError, KeyboardInterrupt):
         print('Cancelled.', file=sys.stderr)
