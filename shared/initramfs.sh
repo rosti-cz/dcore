@@ -7,7 +7,7 @@ cat > /usr/lib/dracut/dracut.conf.d/30-bootcrew-bootc-container-build.conf <<'EO
 reproducible=yes
 hostonly=no
 compress=zstd
-add_dracutmodules+=" bootc ostree zfs "
+add_dracutmodules+=" bootc ostree zfs crypt systemd-cryptsetup "
 EOF
 mapfile -t kernels < <(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
 [[ ${#kernels[@]} == 1 ]]

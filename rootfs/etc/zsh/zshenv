@@ -1,0 +1,2 @@
+# Loaded by Debian zsh for login, interactive and noninteractive shells.
+. /etc/profile.d/10-dcore-homebrew.sh

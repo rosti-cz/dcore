@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 """Installer command/safety tests using private loop disks and a fake Podman."""
+import fcntl
 import importlib.util
 import json
 import os
@@ -21,6 +22,9 @@ class Installers(unittest.TestCase):
     def setUpClass(cls):
         if os.geteuid() != 0:
             raise unittest.SkipTest('run with sudo; block tests allocate their own loop device')
+        # Detach/rebind tests must not race another suite allocating loop devices.
+        cls.loop_lock = os.open('/run/lock/dcore-loop-tests.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        fcntl.flock(cls.loop_lock, fcntl.LOCK_EX)
         cls.work = Path(tempfile.mkdtemp(prefix='dcore-installer-tests-'))
         cls.bin = cls.work / 'bin'
         cls.bin.mkdir()
@@ -75,6 +79,7 @@ if args[0]=='pull':
         subprocess.run(['blockdev', '--setrw', cls.loop], check=True)
         subprocess.run(['losetup', '--detach', cls.loop], check=True)
         shutil.rmtree(cls.work)
+        os.close(cls.loop_lock)
 
     def setUp(self):
         self.log.write_text('')

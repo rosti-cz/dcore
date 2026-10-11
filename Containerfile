@@ -37,7 +37,8 @@ COPY rootfs/ /
 RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     --mount=type=bind,source=scripts/install-system.sh,target=/install-system.sh \
     --mount=type=bind,source=scripts/install-backup-tools.sh,target=/install-backup-tools.sh \
-    /install-system.sh && /install-backup-tools.sh
+    --mount=type=bind,source=scripts/install-homebrew.sh,target=/install-homebrew.sh \
+    /install-system.sh && /install-backup-tools.sh && /install-homebrew.sh
 # Install the source-built boot stack after APT so Debian packages cannot overwrite it.
 COPY --from=builder /output/ /
 RUN ldconfig
@@ -54,5 +55,6 @@ RUN --mount=type=bind,source=shared/bootc-rootfs.sh,target=/bootc-rootfs.sh \
     mkdir -p /var/lib && ln -s /usr/lib/sysimage/dpkg /var/lib/dpkg && \
     find /run /tmp -mindepth 1 -maxdepth 1 ! -path /run/secrets ! -path /run/.containerenv -exec rm -rf -- {} +
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp /usr/libexec/dcore/verify-image
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]

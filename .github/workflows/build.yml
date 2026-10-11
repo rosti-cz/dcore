@@ -28,6 +28,7 @@ jobs:
         run: |
           sudo modprobe loop
           sudo python3 tests/test-installers.py
+          sudo python3 tests/test-encrypted-install.py
       - id: config
         name: Read Debian release configuration
         run: |
@@ -78,6 +79,11 @@ jobs:
             --build-arg "IMAGE_REVISION=$GITHUB_SHA" \
             --tag "$IMAGE:$DEBIAN_RELEASE" --file Containerfile .
           sudo podman run --rm "$IMAGE:$DEBIAN_RELEASE" /usr/libexec/dcore/verify-image
+      - name: Test user, Homebrew and shell environment
+        run: |
+          sudo podman run --rm --network=none --security-opt label=disable \
+            -v "$GITHUB_WORKSPACE/tests:/tests:ro" \
+            "$IMAGE:$DEBIAN_RELEASE" /tests/test-user-environment.sh
       - name: Test root partition and filesystem growth
         run: |
           sudo modprobe loop

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+systemd-sysusers /usr/lib/sysusers.d/10-dcore-core.conf
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/dcore-core.conf
+# Allocate a non-overlapping rootless container range, including on upgraded
+# hosts with locally managed passwd/subuid/subgid databases.
+python3 - <<'PYSUBIDS'
+from pathlib import Path
+for name in ('subuid', 'subgid'):
+    path=Path('/etc')/name
+    entries=path.read_text().splitlines() if path.exists() else []
+    if any(line.split(':')[0] == 'core' for line in entries if line.strip()):
+        continue
+    occupied=sorted((int(parts[1]),int(parts[1])+int(parts[2]))
+                    for line in entries if (parts:=line.split(':')) and len(parts)==3)
+    start=100000
+    for first,last in occupied:
+        if start+65536<=first: break
+        if start<last: start=last
+    if start+65536>4294967294: raise SystemExit('No free subordinate ID range for core')
+    with path.open('a') as output:
+        if entries and not path.read_text().endswith('\n'): output.write('\n')
+        output.write(f'core:{start}:65536\n')
+PYSUBIDS
+# Only installation-seeded keys are propagated; preserve locally managed keys.
+if [[ -f /etc/tmpfiles.d/bootc-root-ssh.conf && -f /root/.ssh/authorized_keys ]]; then
+    home=$(getent passwd core | cut -d: -f6)
+    install -d -m 0700 -o core -g core "$home/.ssh"
+    if [[ ! -e "$home/.ssh/authorized_keys" ]]; then
+        install -m 0600 -o core -g core /root/.ssh/authorized_keys "$home/.ssh/authorized_keys"
+    fi
+fi
+prefix=/home/linuxbrew/.linuxbrew
+if [[ -x "$prefix/bin/brew" ]]; then
+    # Preserve formulae and the managing user's brew updates across OS upgrades.
+    if [[ $(stat -c %u "$prefix") != $(id -u core) ]]; then
+        chown -R core:core "$prefix"
+    fi
+    exit 0
+fi
+if [[ -e "$prefix" ]]; then
+    echo 'Existing incomplete Homebrew prefix left intact; inspect it before retrying.' >&2
+    exit 1
+fi
+staging=$(mktemp -d /home/linuxbrew/.linuxbrew-seed.XXXXXXXX)
+trap 'rm -rf -- "$staging"' EXIT
+tar --extract --zstd --no-same-owner --file /usr/share/dcore/homebrew-seed.tar.zst --directory "$staging"
+chown -R core:core "$staging"
+chmod 0755 "$staging"
+mv -T "$staging" "$prefix"
+trap - EXIT
+echo 'Homebrew initialized in persistent storage, owned by core.'

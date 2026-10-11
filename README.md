@@ -16,23 +16,133 @@ Podman supplies bootc's required container runtime; sudo is included for adminis
 Release downloads are checked against upstream SHA-256 checksums.
 `bat` and `ripgrep` provide Debian's `batcat` and `rg` commands.
 
+## Features
+
+- Debian Trixie with configurable release variants, daily OCI builds and Debian
+  release tags (`trixie`, `stable`, `latest`).
+- GitHub release artifacts: 10 GiB raw, QEMU QCOW2 and Incus VM images.
+- Incus guest agent and installers for Incus VMs and physical block devices.
+- ext4 by default, with Btrfs and XFS installer options; automatic root growth
+  when the unencrypted root partition is last and disk space follows it.
+- Optional passphrase-protected LUKS2 root in `block_install`.
+- `core` administrator with passwordless sudo; installation SSH keys shared
+  with root. Password-based SSH login is disabled.
+- Persistent Homebrew owned by core, with command paths for every user,
+  including root, and Distrobox for development containers.
+- Open vSwitch and BIRD 3, ready for administrator configuration.
+- Weekly automatic image updates and reboot, disabled until enabled by the user.
+- Time synchronization and scheduled filesystem trimming enabled by default.
+
 ## Installed tools
 
+- Default administrator: `core`, with passwordless sudo and shared installation
+  SSH keys for root and core.
 - Shell and terminal: fish, htop, vim, tmux, iotop, ncdu, duf.
 - Networking and APIs: nmap, wget, curl, HTTPie (`http`/`https`),
   iputils-tracepath (`tracepath`), rsync, rclone.
 - Development and files: git, jq, unzip, bat (`batcat`), ripgrep (`rg`),
-  bzip2, zstd.
+  bzip2, zstd, build-essential.
 - Containers: Incus (Zabbly stable), Incus guest-agent integration (Debian), Docker (`docker.io` and `docker-cli`),
-  Docker Compose (`docker compose`), Podman, skopeo.
+  Docker Compose (`docker compose`), Podman, Distrobox, skopeo.
+- Package management: Homebrew, owned by the `core` user in persistent storage.
+- Routing and switching: Debian Open vSwitch (`openvswitch-switch`,
+  `openvswitch-common`) and BIRD 3 (`bird3`).
 - Backups: latest stable Rustic (`rustic`) and Restic (`restic`).
 - System: bootc, OSTree, sudo, OpenSSH server, netplan, systemd-resolved,
   systemd-timesyncd (enabled), fstrim timer (enabled).
 - Storage: Debian ZFS (`zfsutils-linux`, `zfs-zed`, `zfs-dracut`, and
-  `zfs-dkms` compiled for the image kernel), parted, `btrfs-progs` (`btrfs`), ext4, XFS and FAT utilities.
+  `zfs-dkms` compiled for the image kernel), parted, `btrfs-progs` (`btrfs`), ext4, XFS and FAT utilities, cryptsetup and systemd-cryptsetup.
 
 The full package/version inventory is `/usr/share/dcore/packages.tsv` inside
 an image. Backup-tool versions are recorded under `/usr/share/dcore` too.
+
+## Core user, Homebrew and Distrobox
+
+The image creates `core` with a Bash login shell and persistent home at
+`/var/home/core` (`/home/core` resolves there too). Its password is locked by
+default; use `sudo -iu core` from an administrator account or add an SSH public
+key to its home directory. `core` has passwordless sudo for all commands as
+the default administrator account. When an installation SSH public key is provided, it is installed for
+both root and core. Existing locally managed core keys are preserved on later
+boots.
+Fresh installations use UID 1000 for core.
+
+Homebrew uses its standard Linux prefix, `/home/linuxbrew/.linuxbrew`, backed by
+`/var/home/linuxbrew/.linuxbrew` and owned by `core:core`. The image carries an
+upstream bootstrap copy, including portable Ruby. `dcore-homebrew.service`
+initializes it locally on the first boot without downloading an installer.
+Existing Homebrew installations and formulae are preserved across later boots
+and bootc image upgrades. The initial installer/repository commits are recorded
+in `/usr/share/dcore/homebrew-seed-versions`; Homebrew updates afterward are
+managed by core independently of bootc.
+
+Homebrew's `bin` and `sbin` precede the usual system directories in the global
+PATH. PAM login environment, login/su defaults, Bash/POSIX profile setup, Fish,
+Debian Zsh, sudo's secure path, and systemd service/user-manager environments
+are configured so all users, including root, can find installed commands.
+The configuration sets static paths and never evaluates user-managed brew code
+during root shell startup. A `/usr/bin/brew` launcher also exposes brew when a
+caller deliberately uses a minimal system PATH. Shells inherit their session's
+PATH; explicit custom PATH overrides or `--no-config` startup remain under the
+caller's control.
+
+Manage packages **as core**; Homebrew's own restrictions on package-management
+commands run as root still apply:
+
+```bash
+sudo -iu core
+brew --version
+brew install hello
+hello
+# Later:
+brew update
+brew upgrade
+```
+
+Root and other users can then run `hello` directly after opening a new session.
+For a one-off command from root, use `sudo -u core -H brew install PACKAGE`.
+To inspect initialization and ownership:
+
+```bash
+systemctl status dcore-homebrew.service
+journalctl -b -u dcore-homebrew.service
+getent passwd core
+stat -c '%U:%G %a %n' /home/linuxbrew/.linuxbrew
+command -v brew
+```
+
+Distrobox is installed from Debian and uses Podman. Core gets subordinate UID
+and GID ranges plus a lingering systemd user manager for rootless containers.
+From core's login shell:
+
+```bash
+distrobox create --name debian-dev --image docker.io/library/debian:trixie
+distrobox enter debian-dev
+```
+
+Containers, Homebrew packages and caches consume persistent disk space; grow
+beyond the initial 10 GiB disk when using them extensively. These installations
+stay in `/var`; `/usr` remains managed by bootc and read-only.
+
+## Open vSwitch and BIRD 3
+
+Both are Debian packages. BIRD and Open vSwitch's switching service are disabled
+by default so an administrator can configure them before starting them. Netplan
+may start the OVS database service for cleanup even when switching is disabled;
+its database and logs live in persistent `/var`. For Open vSwitch:
+
+```bash
+sudo systemctl enable --now openvswitch-switch.service
+sudo ovs-vsctl show
+```
+
+Configure `/etc/bird/bird.conf`, validate it, then enable BIRD:
+
+```bash
+sudo bird -p -c /etc/bird/bird.conf
+sudo systemctl enable --now bird.service
+sudo birdc show status
+```
 
 ## Build and publish
 
@@ -327,6 +437,11 @@ provision a key through the agent if you also want SSH access:
 incus exec dcore-release -- install -d -m 0700 /root/.ssh
 incus file push ~/.ssh/id_ed25519.pub \
   dcore-release/root/.ssh/authorized_keys --mode=0600
+incus exec dcore-release -- bash -eu -c '
+  home=$(getent passwd core | cut -d: -f6)
+  install -d -m 0700 -o core -g core "$home/.ssh"
+  install -m 0600 -o core -g core /root/.ssh/authorized_keys "$home/.ssh/authorized_keys"
+'
 ```
 
 ## Prepare a release disk with SSH access
@@ -389,6 +504,12 @@ rather than attempting to edit its immutable root image directly:
       bootc install mount --sysroot /work/sysroot --latest /work/deployment
       install -d -m 0700 /work/deployment/root/.ssh
       install -m 0600 /run/dcore-key.pub /work/deployment/root/.ssh/authorized_keys
+      core_uid=$(chroot /work/deployment id -u core)
+      core_gid=$(chroot /work/deployment id -g core)
+      core_home=$(chroot /work/deployment getent passwd core | cut -d: -f6)
+      install -d -m 0700 -o "$core_uid" -g "$core_gid" "/work/deployment$core_home/.ssh"
+      install -m 0600 -o "$core_uid" -g "$core_gid" /run/dcore-key.pub \
+        "/work/deployment$core_home/.ssh/authorized_keys"
       sync
     '
 )
@@ -443,7 +564,7 @@ private UEFI variable store for each VM:
 ```bash
 qemu-img create -f qcow2 -F "$BASE_FORMAT" -b "$BASE_DISK" dcore-test.qcow2
 cp /usr/share/OVMF/OVMF_VARS_4M.fd dcore-test-vars.fd
-qemu-system-x86_64 -enable-kvm -machine q35 -m 4096 -smp 2 \
+qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -m 4096 -smp 2 \
   -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
   -drive if=pflash,format=raw,file=dcore-test-vars.fd \
   -drive if=virtio,format=qcow2,file=dcore-test.qcow2 \
@@ -526,7 +647,7 @@ sudo ./scripts/block_install /dev/disk/by-id/REPLACE_WITH_YOUR_SPARE_SSD \
 
 `--image` selects another publicly pullable OCI reference. The SSH public key
 is required because this image has no default password or Incus agent access
-on bare metal. Only the public key is installed; keep your private key on the
+on bare metal. The public key is installed for root and core; keep your private key on the
 administration machine. XFS automatically uses `--allow-missing-verity`.
 The destination is rechecked after pulling the image, including its Linux disk
 sequence, so a replacement USB disk under the same `/dev/sdX` name is refused.
@@ -544,6 +665,33 @@ When the script finishes, boot the installed disk on the target hardware in
 UEFI mode, find its DHCP address, and connect with the matching private key.
 The manual installation procedure below performs the same bootc installation
 if you prefer individual commands.
+
+### Encrypt the root disk
+
+Add `--encrypt` to ask for a passphrase twice before the disk is formatted:
+
+```bash
+sudo ./scripts/block_install /dev/disk/by-id/REPLACE_WITH_YOUR_SPARE_DISK \
+  --encrypt --ssh-key "$HOME/.ssh/id_ed25519.pub"
+# --filesystem btrfs or --filesystem xfs can be combined with --encrypt.
+```
+
+This creates a LUKS2 partition containing the root filesystem and persistent
+user/container data. The EFI partition, kernel and initramfs remain unencrypted.
+The passphrase is required at the console on **every boot**, including reboots
+triggered by automatic updates. No TPM unlocking or stored unlock key is
+configured. Ensure console access before enabling automatic reboots.
+The encrypted installer requires a destination of at least 10 GiB and an image
+with dcore's encryption tools and initramfs support; it checks these before
+formatting. The LUKS partition initially uses the remaining disk space. Automatic
+root growth currently skips encrypted mappings if you later enlarge the disk.
+
+For unattended provisioning, `--passphrase-file PATH` reads a private regular
+file owned by the invoking user or root, with permissions `0600` or `0400`.
+Combine it with `--encrypt` and, if needed, `--confirm-device DEVICE`. The
+installer passes the secret through stdin and an anonymous memory descriptor;
+it does not store an unlock key on the installed disk. Keep the source password
+file private and manage its lifetime yourself.
 
 ### Install the current OCI image from live Linux
 
@@ -645,7 +793,9 @@ Find the server's DHCP address in your router, then connect from your
 administration machine:
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 root@SERVER_IP
+ssh -i ~/.ssh/id_ed25519 core@SERVER_IP
+# core can administer the system with sudo without a password.
+# root@SERVER_IP also accepts the same installation key.
 ```
 
 The Incus guest agent does not start on bare metal; your SSH key provides
@@ -670,6 +820,13 @@ restic version
 btrfs --version
 parted --version
 ncdu --version
+distrobox --version
+ovs-vsctl --version
+bird --version
+getent passwd core
+sudo -u core -H brew --version
+stat -c '%U:%G %a %n' /home/linuxbrew/.linuxbrew
+systemctl is-active dcore-homebrew.service
 systemctl is-active ssh.service systemd-timesyncd.service docker.service
 systemctl is-enabled fstrim.timer dcore-grow-root.service
 systemctl is-enabled dcore-update.timer || true
@@ -712,13 +869,30 @@ synchronization was not confirmed. Incus daemon import,
 remain unverified. Validate these before relying on the release pipeline.
 
 Root-growth validation additionally booted 10 GiB native bootc disks under QEMU
-with ext4, single-device Btrfs and XFS. All three had over 4 GiB free, expanded
+with ext4, single-device Btrfs and XFS. Those builds had over 4 GiB free, expanded
 successfully when their virtual disks grew to 14 GiB and then 16 GiB, and stayed
 unchanged across an intervening reboot. User data, SSH host keys, and read-only
 `/usr` were preserved. Integration tests also cover interrupted growth,
 read-only backing mounts, a root followed by another partition, unusual
 partition numbering, multi-device Btrfs and unsupported layouts. These tests
 run in daily builds and PR checks, and block publishing if they fail.
+
+User-environment validation booted the current 10 GiB ext4 image under QEMU with
+no failed systemd units. The same installation key authenticated root and core;
+core used passwordless sudo and a working lingering user manager. Core installed
+Homebrew's `hello` formula, which worked from root, Bash, Fish and sudo and
+survived reboot. A rootless Distrobox container was created and entered
+successfully. CI additionally checks offline Homebrew initialization, portable
+Ruby, shared Bash/Dash/Fish command paths for a third user, and preservation of
+locally managed installation state and SSH keys.
+
+Encrypted-disk validation installed and booted LUKS2 roots using ext4, Btrfs and
+XFS under QEMU. Each unlocked into `/dev/mapper/dcore-root`, mounted its EFI
+partition writable with private permissions, and had no failed systemd units.
+An incorrect passphrase was rejected and SSH was unavailable before unlocking.
+The tests also checked core's passwordless sudo and that encrypted root growth
+is skipped. An actual bootc image upgrade on an encrypted disk and bare-metal
+encrypted boots remain unverified.
 
 ## Automatic root disk growth
 

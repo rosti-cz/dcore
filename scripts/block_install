@@ -6,8 +6,10 @@ usage() {
 Usage: sudo block_install DEVICE --ssh-key PUBLIC_KEY [OPTIONS]
   DEVICE                 Whole USB/NVMe/SSD disk; prefer /dev/disk/by-id/...
   --filesystem TYPE      Root filesystem: ext4 (default), btrfs, xfs
+  --encrypt              LUKS2 root; ask and confirm the boot-unlock passphrase
+  --passphrase-file PATH Secured password file for --encrypt (0600/0400)
   --image REF            OCI image (default ghcr.io/rosti-cz/dcore:trixie)
-  --ssh-key PATH         Required existing OpenSSH public key for root access
+  --ssh-key PATH         Required existing OpenSSH public key for root/core access
   --confirm-device PATH  Noninteractive erase confirmation; must equal DEVICE
   --help                 Show this help
 Erases the selected whole disk. Refuses partitions, mounted/swap/mapped/read-only
@@ -21,19 +23,24 @@ HELP
 [[ ${1:-} != --help && ${1:-} != -h ]] || { usage; exit 0; }
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
 requested_device=$1; shift
-filesystem=ext4; image=ghcr.io/rosti-cz/dcore:trixie; ssh_key=; confirmation_device=
+filesystem=ext4; image=ghcr.io/rosti-cz/dcore:trixie; ssh_key=; confirmation_device=; encrypt=false; passphrase_file=
 while [[ $# -gt 0 ]]; do
-    case $1 in --help|-h) usage; exit 0 ;; esac
+    case $1 in
+        --help|-h) usage; exit 0 ;;
+        --encrypt) encrypt=true; shift; continue ;;
+    esac
     [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
     case $1 in
         --filesystem) filesystem=$2 ;;
         --image) image=$2 ;;
+        --passphrase-file) passphrase_file=$2 ;;
         --ssh-key) ssh_key=$2 ;;
         --confirm-device) confirmation_device=$2 ;;
         *) echo "Unknown option: $1" >&2; exit 2 ;;
     esac
     shift 2
 done
+[[ -z $passphrase_file || $encrypt == true ]] || { echo '--passphrase-file requires --encrypt.' >&2; exit 2; }
 case $filesystem in
     ext4|btrfs|xfs) ;;
     *) echo '--filesystem must be ext4, btrfs, or xfs' >&2; exit 2 ;;
@@ -61,6 +68,7 @@ device=$(realpath -- "$requested_device")
 identity=$(python3 "$script_dir/lib/check-block-device.py" "$device")
 lsblk -o NAME,SIZE,MODEL,SERIAL,TRAN,TYPE,MOUNTPOINTS "$device"
 printf '\nAll data on %s (%s) will be erased. Filesystem: %s\n' "$requested_device" "$device" "$filesystem"
+if [[ $encrypt == true ]]; then printf 'Root encryption: LUKS2, passphrase required at every boot.\n'; fi
 if [[ -n $confirmation_device ]]; then
     [[ $confirmation_device == "$requested_device" ]] || { echo '--confirm-device must exactly match DEVICE.' >&2; exit 2; }
 else
@@ -73,14 +81,22 @@ podman pull "$image"
 [[ $(realpath -- "$requested_device") == "$device" ]] || { echo 'Destination path changed; disk unchanged.' >&2; exit 1; }
 current_identity=$(python3 "$script_dir/lib/check-block-device.py" "$device")
 [[ $current_identity == "$identity" ]] || { echo 'Destination identity or size changed; disk unchanged.' >&2; exit 1; }
-filesystem_args=(--filesystem "$filesystem")
-if [[ $filesystem == xfs ]]; then filesystem_args+=(--allow-missing-verity); fi
-podman run --rm --pull=never --privileged --pid=host --ipc=host \
-    --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
-    -v "$ssh_key:/run/dcore-install.pub:ro" "$image" \
-    bootc install to-disk "$device" --wipe "${filesystem_args[@]}" \
-    --composefs-backend --bootloader systemd --disable-selinux --generic-image \
-    --target-imgref "$image" --root-ssh-authorized-keys /run/dcore-install.pub \
-    --karg console=tty0
+if [[ $encrypt == true ]]; then
+    encryption_args=()
+    if [[ -n $passphrase_file ]]; then encryption_args+=(--passphrase-file "$passphrase_file"); fi
+    python3 "$script_dir/lib/install-encrypted.py" --device "$device" \
+        --requested-device "$requested_device" --identity "$identity" \
+        --filesystem "$filesystem" --image "$image" --ssh-key "$ssh_key" "${encryption_args[@]}"
+else
+    filesystem_args=(--filesystem "$filesystem")
+    if [[ $filesystem == xfs ]]; then filesystem_args+=(--allow-missing-verity); fi
+    podman run --rm --pull=never --privileged --pid=host --ipc=host \
+        --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
+        -v "$ssh_key:/run/dcore-install.pub:ro" "$image" \
+        bootc install to-disk "$device" --wipe "${filesystem_args[@]}" \
+        --composefs-backend --bootloader systemd --disable-selinux --generic-image \
+        --target-imgref "$image" --root-ssh-authorized-keys /run/dcore-install.pub \
+        --karg console=tty0
+fi
 sync
-printf '\nInstalled %s with %s on %s.\nBoot it in UEFI mode with Secure Boot disabled; SSH as root using the matching private key.\nThe current host has not been rebooted.\n' "$image" "$filesystem" "$device"
+printf '\nInstalled %s with %s on %s.\nBoot it in UEFI mode with Secure Boot disabled; SSH as root or core using the matching private key.\nThe current host has not been rebooted.\n' "$image" "$filesystem" "$device"

@@ -173,6 +173,8 @@ wait_agent "$name"
 if [[ -n $release && -n $ssh_key ]]; then
     incus exec "$name" -- install -d -m 0700 /root/.ssh
     incus file push "$ssh_key" "$name/root/.ssh/authorized_keys" --mode=0600
+    # shellcheck disable=SC2016 # Variables expand inside the guest.
+    incus exec "$name" -- bash -eu -c 'home=$(getent passwd core | cut -d: -f6); install -d -m 0700 -o core -g core "$home/.ssh"; install -m 0600 -o core -g core /root/.ssh/authorized_keys "$home/.ssh/authorized_keys"'
 fi
 incus exec "$name" -- bootc status
 success=true

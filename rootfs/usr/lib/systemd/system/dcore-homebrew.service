@@ -1,0 +1,14 @@
+[Unit]
+Description=Initialize persistent core user and Homebrew installation
+After=local-fs.target systemd-sysusers.service systemd-tmpfiles-setup.service
+Before=multi-user.target ssh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/dcore/init-homebrew
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+RemainAfterExit=yes
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target

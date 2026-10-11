@@ -2,7 +2,7 @@
 set -euo pipefail
 bootc container lint --fatal-warnings
 ostree --version | grep -q composefs
-systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-update.service /usr/lib/systemd/system/dcore-update.timer /usr/lib/systemd/system/dcore-grow-root.service
+systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-update.service /usr/lib/systemd/system/dcore-update.timer /usr/lib/systemd/system/dcore-grow-root.service /usr/lib/systemd/system/dcore-homebrew.service
 mapfile -t kernels < <(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
 [[ ${#kernels[@]} == 1 ]]
 kernel=${kernels[0]}
@@ -11,12 +11,12 @@ test -s "/usr/lib/modules/${kernel}/initramfs.img"
 modinfo -k "$kernel" zfs > /dev/null
 initramfs="/usr/lib/modules/${kernel}/initramfs.img"
 modules=$(lsinitrd -m "$initramfs")
-for module in bootc ostree zfs; do
+for module in bootc ostree zfs crypt systemd-cryptsetup; do
     grep -qx "$module" <<< "$modules"
 done
 root_config=$(lsinitrd -f usr/lib/ostree/prepare-root.conf "$initramfs")
 grep -q 'enabled = yes' <<< "$root_config"
-for unit in systemd-timesyncd.service fstrim.timer dcore-grow-root.service; do
+for unit in systemd-timesyncd.service fstrim.timer dcore-grow-root.service dcore-homebrew.service; do
     [[ $(systemctl --root=/ is-enabled "$unit") == enabled ]]
 done
 for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updates.timer apt-daily.timer apt-daily-upgrade.timer; do
@@ -24,7 +24,12 @@ for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updat
         echo "Unexpected enabled update timer: $unit" >&2; exit 1
     fi
 done
-for tool in fish htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs growpart sgdisk resize2fs xfs_growfs sfdisk partx findmnt unshare bootc; do
+# Static OVS helper units are started only by the explicitly enabled parent.
+for unit in bird.service openvswitch-switch.service ovsdb-server.service ovs-vswitchd.service; do
+    state=$(systemctl --root=/ is-enabled "$unit" 2>/dev/null || true)
+    [[ $state == disabled || $state == static ]]
+done
+for tool in cryptsetup fish htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs growpart sgdisk resize2fs xfs_growfs sfdisk partx findmnt unshare distrobox distrobox-create newuidmap newgidmap slirp4netns fuse-overlayfs pasta ovs-vsctl ovs-vswitchd bird birdc brew bootc; do
     command -v "$tool" > /dev/null
 done
 test -x /usr/libexec/incus/incus-agent
@@ -33,10 +38,17 @@ test -s /usr/lib/udev/rules.d/60-incus-agent.rules
 systemd-analyze verify --man=no incus-agent.service
 grep -qx 'ExecStart=/usr/libexec/dcore/incus-agent' /usr/lib/systemd/system/incus-agent.service.d/10-host-agent.conf
 test -x /usr/libexec/dcore/grow-root
-dpkg-query -W cloud-guest-utils gdisk btrfs-progs incus-agent zfs-dkms zfsutils-linux incus docker.io docker-compose systemd-timesyncd > /dev/null
+test -s /usr/share/dcore/homebrew-seed.tar.zst
+getent passwd core > /dev/null
+visudo --check
+dpkg-query -W cryptsetup systemd-cryptsetup distrobox uidmap openvswitch-switch openvswitch-common bird3 build-essential cloud-guest-utils gdisk btrfs-progs incus-agent zfs-dkms zfsutils-linux incus docker.io docker-compose systemd-timesyncd > /dev/null
 incus --version
 LD_LIBRARY_PATH=/opt/incus/lib /opt/incus/bin/incusd --version
 LD_LIBRARY_PATH=/opt/incus/lib "/opt/incus/bin/qemu-system-$(uname -m)" --version
 docker compose version
 rustic --version
 restic version
+
+distrobox --version
+ovs-vsctl --version
+bird --version
