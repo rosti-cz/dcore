@@ -94,7 +94,7 @@ class DispatchTests(unittest.TestCase):
     def args(self, filesystem='ext4'):
         return argparse.Namespace(device=self.loop, requested_device=self.loop,
                                   identity=json.dumps(self.checker.check(self.loop)),
-                                  filesystem=filesystem, image='ghcr.io/rosti-cz/dcore:trixie',
+                                  filesystem=filesystem, no_grow_root=False, image='ghcr.io/rosti-cz/dcore:trixie',
                                   ssh_key=str(self.work / 'public.pub'), passphrase_file=str(self.password))
 
     def test_secret_only_in_stdin_and_all_filesystems(self):
@@ -110,6 +110,13 @@ class DispatchTests(unittest.TestCase):
             self.assertEqual(command[command.index('--filesystem') + 1], filesystem)
             self.assertIn('-i', command)
             self.assertIn('--inside', command)
+
+    def test_growth_opt_out_forwarded(self):
+        args = self.args()
+        args.no_grow_root = True
+        with mock.patch.object(helper, 'run') as invoke:
+            helper.host_install(args)
+        self.assertIn('--no-grow-root', invoke.call_args.args[0])
 
     def test_device_replacement_after_password_entry(self):
         args = self.args()

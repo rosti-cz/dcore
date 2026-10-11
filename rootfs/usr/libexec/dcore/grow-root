@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Grow only the final GPT partition backing bootc's /sysroot filesystem."""
+"""Grow final GPT roots; resize LUKS2 partitions before unlocking, filesystems after."""
 import argparse
 import fcntl
 import json
@@ -87,6 +87,118 @@ def btrfs_device(mountpoint, root):
     return devid
 
 
+def partition_parent(root, holder=None):
+    identity = device_id(root)
+    node = Path(f"/sys/dev/block/{os.major(identity)}:{os.minor(identity)}").resolve(strict=True)
+    if not (node / "partition").is_file():
+        raise Skip("root is not a supported partition")
+    number = (node / "partition").read_text().strip()
+    disk = f"/dev/{node.parent.name}"
+    if command("lsblk", "--nodeps", "--noheadings", "--output", "TYPE", disk).stdout.strip() not in ("disk", "loop"):
+        raise Skip("unsupported parent device type")
+    holders = [p.name for p in (node / "holders").iterdir()]
+    if holders != ([] if holder is None else [holder]):
+        raise Skip("root partition has unexpected layered device holders")
+    return disk, number
+
+
+def luks_metadata(partition):
+    if command("cryptsetup", "isLuks", "--type", "luks2", partition, allowed=(0, 1)).returncode:
+        raise Skip("root is not an inline LUKS2 volume")
+    metadata = json.loads(command("cryptsetup", "luksDump", "--dump-json-metadata", partition).stdout)
+    segments = list(metadata.get("segments", {}).values())
+    if (len(segments) != 1 or segments[0].get("type") != "crypt"
+            or segments[0].get("size") != "dynamic" or segments[0].get("integrity")
+            or segments[0].get("flags") or metadata.get("config", {}).get("requirements", {}).get("mandatory")):
+        raise Skip("LUKS2 integrity, reencryption or fixed-size segments are unsupported")
+    return segments[0]
+
+
+def backing_partition(root):
+    identity = device_id(root)
+    node = Path(f"/sys/dev/block/{os.major(identity)}:{os.minor(identity)}").resolve(strict=True)
+    if (node / "partition").is_file():
+        return root, None
+    if not (node / "dm/uuid").is_file():
+        raise Skip("whole devices, LVM and RAID are unsupported")
+    dm_uuid = (node / "dm/uuid").read_text().strip()
+    match = re.fullmatch(r"CRYPT-LUKS2-([0-9a-fA-F]{32})-.+", dm_uuid)
+    slaves = list((node / "slaves").iterdir())
+    if not match or len(slaves) != 1:
+        raise Skip("root is not a direct single-device LUKS2 mapping")
+    partition = f"/dev/{slaves[0].name}"
+    partition_parent(partition, node.name)
+    if command("cryptsetup", "luksUUID", partition).stdout.strip().replace("-", "").lower() != match[1].lower():
+        raise Skip("active mapping does not match the LUKS2 header UUID")
+    segment = luks_metadata(partition)
+    size = int(command("blockdev", "--getsize64", partition).stdout)
+    offset, sector = int(segment["offset"]), int(segment["sector_size"])
+    expected = ((size - offset) // sector) * sector
+    actual = int(command("blockdev", "--getsize64", root).stdout)
+    if actual != expected:
+        raise Skip("LUKS mapping does not fill its partition; reboot to reopen it at full size")
+    return partition, node.name
+
+
+def grow_partition(disk, root, number, dry_run=False):
+    before, original, disk_size = layout(disk, root)
+    if dry_run:
+        result = command("growpart", "--dry-run", disk, number, allowed=(0, 1))
+        log(result.stdout.strip() or "partition already fills available space")
+        return original["size"] * int(before["sectorsize"])
+    end = (original["start"] + original["size"]) * int(before["sectorsize"])
+    if disk_size - end >= 1024 * 1024:
+        command("sgdisk", "--move-second-header", disk)
+        probe = command("growpart", "--dry-run", disk, number, allowed=(0, 1))
+        if probe.returncode == 0:
+            log(command("growpart", disk, number).stdout.strip())
+        else:
+            log("partition already fills available space")
+    else:
+        log("no significant trailing space; checking filesystem size")
+    after, current, _ = layout(disk, root)
+    if after.get("id") != before.get("id"):
+        raise RuntimeError("disk UUID changed unexpectedly")
+    for entry in before["partitions"]:
+        updated = next(p for p in after["partitions"] if p["node"] == entry["node"])
+        expected = dict(entry)
+        if entry == original:
+            if updated["size"] < entry["size"]:
+                raise RuntimeError("root partition unexpectedly shrank")
+            expected["size"] = updated["size"]
+        if updated != expected:
+            raise RuntimeError("partition identity or unrelated partition changed unexpectedly")
+    expected_size = current["size"] * int(after["sectorsize"])
+    actual_size = int(command("blockdev", "--getsize64", root).stdout)
+    if actual_size != expected_size:
+        command("partx", "--update", "--nr", number, disk)
+        actual_size = int(command("blockdev", "--getsize64", root).stdout)
+        if actual_size != expected_size:
+            raise RuntimeError("kernel has not accepted the new partition size; growth deferred until next boot")
+    return actual_size
+
+
+def grow_luks_partition(partition, dry_run):
+    partition = os.path.realpath(partition)
+    luks_metadata(partition)
+    disk, number = partition_parent(partition)
+    grow_partition(disk, partition, number, dry_run)
+    log("LUKS2 partition checked before unlock; opening it will use the full payload size")
+
+
+def initrd_partition(name, cmdline):
+    if name != "dcore-root":
+        raise Skip("cryptsetup instance is not dcore's root")
+    words = cmdline.split()
+    if [word for word in words if word.startswith("root=")] != ["root=/dev/mapper/dcore-root"]:
+        raise Skip("kernel root does not use the dcore-root mapping")
+    uuids = [word.removeprefix("rd.luks.name=").removesuffix("=dcore-root")
+             for word in words if word.startswith("rd.luks.name=") and word.endswith("=dcore-root")]
+    if len(uuids) != 1 or not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", uuids[0]):
+        raise Skip("root LUKS UUID cannot be identified unambiguously")
+    return f"/dev/disk/by-uuid/{uuids[0]}"
+
+
 def grow(dry_run):
     result = command("findmnt", "--json", "--mountpoint", "/sysroot", "--output", "SOURCE,FSTYPE,OPTIONS,MAJ:MIN", allowed=(0, 1))
     if result.returncode == 1:
@@ -99,19 +211,11 @@ def grow(dry_run):
     if filesystem not in ("ext4", "btrfs", "xfs"):
         raise Skip(f"unsupported backing filesystem: {filesystem}")
     root = root_device(mount)
-    identity = device_id(root)
-    sysdevice = Path(f"/sys/dev/block/{os.major(identity)}:{os.minor(identity)}").resolve(strict=True)
-    if not (sysdevice / "partition").is_file():
-        raise Skip("root is not a plain partition (whole devices, LVM, encryption and RAID are unsupported)")
-    number = (sysdevice / "partition").read_text().strip()
-    disk = f"/dev/{sysdevice.parent.name}"
-    # Device-mapper partitions can have a parent too; reject layered disk types.
-    disk_type = command("lsblk", "--nodeps", "--noheadings", "--output", "TYPE", disk).stdout.strip()
-    if disk_type not in ("disk", "loop"):
-        raise Skip(f"unsupported parent device type: {disk_type}")
-    if any((sysdevice / "holders").iterdir()):
-        raise Skip("root partition has a layered device holder")
-    before, original, disk_size = layout(disk, root)
+    partition, holder = backing_partition(root)
+    disk, number = partition_parent(partition, holder)
+    before, original, disk_size = layout(disk, partition)
+    if holder and disk_size - (original["start"] + original["size"]) * int(before["sectorsize"]) >= 1024 * 1024:
+        raise Skip("encrypted partition has trailing space; reboot to grow it before unlock")
     devid = btrfs_device("/sysroot", root) if filesystem == "btrfs" else None
     log(f"backing root is {root}, {filesystem}, partition {number} on {disk}")
     if dry_run:
@@ -127,37 +231,8 @@ def grow(dry_run):
         command("mount", "--bind", "/sysroot", writable)
         try:
             command("mount", "-o", "remount,bind,rw", writable)
-            end = (original["start"] + original["size"]) * int(before["sectorsize"])
-            if disk_size - end >= 1024 * 1024:
-                # Images copied to larger disks have a backup GPT at the old end.
-                command("sgdisk", "--move-second-header", disk)
-                probe = command("growpart", "--dry-run", disk, number, allowed=(0, 1))
-                if probe.returncode == 0:
-                    changed = command("growpart", disk, number)
-                    log(changed.stdout.strip())
-                else:
-                    log("partition already fills available space")
-            else:
-                log("no significant trailing space; checking filesystem size")
-            after, current, _ = layout(disk, root)
-            if after.get("id") != before.get("id"):
-                raise RuntimeError("disk UUID changed unexpectedly")
-            for entry in before["partitions"]:
-                updated = next(p for p in after["partitions"] if p["node"] == entry["node"])
-                expected = dict(entry)
-                if entry == original:
-                    if updated["size"] < entry["size"]:
-                        raise RuntimeError("root partition unexpectedly shrank")
-                    expected["size"] = updated["size"]
-                if updated != expected:
-                    raise RuntimeError("partition identity or unrelated partition changed unexpectedly")
-            expected_size = current["size"] * int(after["sectorsize"])
-            actual_size = int(command("blockdev", "--getsize64", root).stdout)
-            if actual_size != expected_size:
-                command("partx", "--update", "--nr", number, disk)
-                actual_size = int(command("blockdev", "--getsize64", root).stdout)
-                if actual_size != expected_size:
-                    raise RuntimeError("kernel has not accepted the new partition size; filesystem growth deferred until next boot")
+            actual_size = (int(command("blockdev", "--getsize64", root).stdout) if holder
+                           else grow_partition(disk, partition, number))
             # Always retry filesystem growth, including after a prior interrupted
             # run that enlarged the partition but left the filesystem unchanged.
             if filesystem == "ext4":
@@ -191,10 +266,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="inspect partition growth without changing disks")
     parser.add_argument("--private-namespace", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--luks-partition", help=argparse.SUPPRESS)
+    parser.add_argument("--initrd-luks-root", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error("run as root")
-    if not args.dry_run and not args.private_namespace:
+    if not args.dry_run and not args.private_namespace and not (args.luks_partition or args.initrd_luks_root):
         # Isolate manual runs too, so a killed process cannot leave host mounts
         # writable. The service additionally sets PrivateMounts=yes.
         os.execvp("unshare", ["unshare", "--mount", "--propagation", "private",
@@ -203,7 +280,15 @@ def main():
     with open("/run/dcore-grow-root.lock", "w", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            grow(args.dry_run)
+            cmdline = Path("/proc/cmdline").read_text()
+            if "dcore.grow-root=0" in cmdline.split():
+                raise Skip("disabled by dcore.grow-root=0")
+            if args.initrd_luks_root:
+                grow_luks_partition(initrd_partition(args.initrd_luks_root, cmdline), args.dry_run)
+            elif args.luks_partition:
+                grow_luks_partition(args.luks_partition, args.dry_run)
+            else:
+                grow(args.dry_run)
         except Skip as error:
             log(f"skipped: {error}")
         except (RuntimeError, OSError, ValueError, KeyError, StopIteration) as error:

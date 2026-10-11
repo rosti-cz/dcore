@@ -8,9 +8,10 @@ if mountpoint -q /sysroot; then
 fi
 helper=${GROW_ROOT_HELPER:-/usr/libexec/dcore/grow-root}
 work=$(mktemp -d /tmp/dcore-grow-tests.XXXXXXXX)
-loop=; second_loop=; mounted=false
+loop=; second_loop=; mapper=; mounted=false
 cleanup_fixture() {
     if [[ $mounted == true ]]; then umount /sysroot; mounted=false; fi
+    if [[ -n $mapper ]]; then cryptsetup close "$mapper"; mapper=; fi
     if [[ -n $second_loop ]]; then losetup --detach "$second_loop"; second_loop=; fi
     if [[ -n $loop ]]; then losetup --detach "$loop"; loop=; fi
 }
@@ -85,6 +86,65 @@ for filesystem in ext4 btrfs xfs; do
     echo "PASS: $filesystem grows, repeats safely, recovers partial growth, preserves read-only flags"
 done
 
+# LUKS2 opens at the full partition size. Grow GPT before unlocking, then
+# grow the filesystem through its active mapping without another passphrase.
+for filesystem in ext4 btrfs xfs; do
+    make_fixture "$filesystem" "luks-$filesystem"
+    umount /sysroot
+    mounted=false
+    printf 'test-only-growth-passphrase' | cryptsetup luksFormat --batch-mode --pbkdf pbkdf2 --key-file - "${loop}p2"
+    mapper="dcore-grow-test-$RANDOM"
+    printf 'test-only-growth-passphrase' | cryptsetup open --key-file - "${loop}p2" "$mapper"
+    case $filesystem in
+        ext4) mkfs.ext4 -q "/dev/mapper/$mapper" ;;
+        btrfs) mkfs.btrfs -q "/dev/mapper/$mapper" ;;
+        xfs) mkfs.xfs -q "/dev/mapper/$mapper" ;;
+    esac
+    mount "/dev/mapper/$mapper" /sysroot
+    mounted=true
+    printf 'data survives root growth\n' > /sysroot/payload
+    initial=$(capacity)
+    truncate -s 2G "$raw"
+    losetup --set-capacity "$loop"
+    unchanged=$(sfdisk --dump "$loop")
+    "$helper"
+    "$helper" --luks-partition "${loop}p2"
+    [[ $(sfdisk --dump "$loop") == "$unchanged" ]]
+    umount /sysroot
+    mounted=false
+    cryptsetup close "$mapper"
+    "$helper" --dry-run --luks-partition "${loop}p2"
+    [[ $(sfdisk --dump "$loop") == "$unchanged" ]]
+    "$helper" --luks-partition "${loop}p2"
+    printf 'test-only-growth-passphrase' | cryptsetup open --key-file - "${loop}p2" "$mapper"
+    mount "/dev/mapper/$mapper" /sysroot
+    mounted=true
+    "$helper"
+    grown=$(capacity)
+    [[ $grown -gt $initial ]]
+    assert_preserved
+    grown_table=$(sfdisk --dump "$loop")
+    "$helper"
+    [[ $(capacity) == "$grown" && $(sfdisk --dump "$loop") == "$grown_table" ]]
+    # Simulate interruption between pre-unlock partition and filesystem growth.
+    umount /sysroot
+    mounted=false
+    cryptsetup close "$mapper"
+    truncate -s 3G "$raw"
+    losetup --set-capacity "$loop"
+    "$helper" --luks-partition "${loop}p2"
+    "$helper" --luks-partition "${loop}p2"
+    printf 'test-only-growth-passphrase' | cryptsetup open --key-file - "${loop}p2" "$mapper"
+    mount "/dev/mapper/$mapper" /sysroot
+    mount -o remount,bind,ro /sysroot
+    mounted=true
+    options=$(findmnt -n -o OPTIONS --mountpoint /sysroot)
+    "$helper"
+    [[ $(capacity) -gt $grown && $(findmnt -n -o OPTIONS --mountpoint /sysroot) == "$options" ]]
+    assert_preserved
+    echo "PASS: LUKS2 $filesystem grows after unlock, recovers partial growth, preserves data and read-only flags"
+done
+
 # A root followed by another partition must not consume even a free gap.
 make_fixture ext4 non-final
 cleanup_fixture
@@ -105,6 +165,21 @@ unchanged=$(sfdisk --dump "$loop")
 "$helper"
 [[ $(sfdisk --dump "$loop") == "$unchanged" ]]
 echo 'PASS: root followed by another partition is unchanged'
+# The same non-final layout must remain untouched before and after LUKS unlock.
+umount /sysroot
+mounted=false
+printf 'test-only-growth-passphrase' | cryptsetup luksFormat --batch-mode --pbkdf pbkdf2 --key-file - "${loop}p2"
+"$helper" --luks-partition "${loop}p2"
+[[ $(sfdisk --dump "$loop") == "$unchanged" ]]
+mapper="dcore-grow-test-$RANDOM"
+printf 'test-only-growth-passphrase' | cryptsetup open --key-file - "${loop}p2" "$mapper"
+mkfs.ext4 -q "/dev/mapper/$mapper"
+mount "/dev/mapper/$mapper" /sysroot
+mounted=true
+"$helper"
+[[ $(sfdisk --dump "$loop") == "$unchanged" ]]
+echo 'PASS: non-final LUKS2 root skipped before and after unlock'
+
 
 # Partition numbering is not physical ordering: root p1 ends after data p2.
 cleanup_fixture

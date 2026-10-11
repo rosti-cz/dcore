@@ -6,6 +6,7 @@ usage() {
 Usage: sudo block_install DEVICE --ssh-key PUBLIC_KEY [OPTIONS]
   DEVICE                 Whole USB/NVMe/SSD disk; prefer /dev/disk/by-id/...
   --filesystem TYPE      Root filesystem: ext4 (default), btrfs, xfs
+  --no-grow-root         Disable automatic growth, including before LUKS unlock
   --encrypt              LUKS2 root; ask and confirm the boot-unlock passphrase
   --passphrase-file PATH Secured password file for --encrypt (0600/0400)
   --image REF            OCI image (default ghcr.io/rosti-cz/dcore:trixie)
@@ -23,11 +24,12 @@ HELP
 [[ ${1:-} != --help && ${1:-} != -h ]] || { usage; exit 0; }
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
 requested_device=$1; shift
-filesystem=ext4; image=ghcr.io/rosti-cz/dcore:trixie; ssh_key=; confirmation_device=; encrypt=false; passphrase_file=
+filesystem=ext4; image=ghcr.io/rosti-cz/dcore:trixie; ssh_key=; confirmation_device=; encrypt=false; no_grow_root=false; passphrase_file=
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help|-h) usage; exit 0 ;;
         --encrypt) encrypt=true; shift; continue ;;
+        --no-grow-root) no_grow_root=true; shift; continue ;;
     esac
     [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
     case $1 in
@@ -83,12 +85,14 @@ current_identity=$(python3 "$script_dir/lib/check-block-device.py" "$device")
 [[ $current_identity == "$identity" ]] || { echo 'Destination identity or size changed; disk unchanged.' >&2; exit 1; }
 if [[ $encrypt == true ]]; then
     encryption_args=()
+    if [[ $no_grow_root == true ]]; then encryption_args+=(--no-grow-root); fi
     if [[ -n $passphrase_file ]]; then encryption_args+=(--passphrase-file "$passphrase_file"); fi
     python3 "$script_dir/lib/install-encrypted.py" --device "$device" \
         --requested-device "$requested_device" --identity "$identity" \
         --filesystem "$filesystem" --image "$image" --ssh-key "$ssh_key" "${encryption_args[@]}"
 else
     filesystem_args=(--filesystem "$filesystem")
+    if [[ $no_grow_root == true ]]; then filesystem_args+=(--karg dcore.grow-root=0); fi
     if [[ $filesystem == xfs ]]; then filesystem_args+=(--allow-missing-verity); fi
     podman run --rm --pull=never --privileged --pid=host --ipc=host \
         --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \

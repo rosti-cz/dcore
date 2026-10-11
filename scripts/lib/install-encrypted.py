@@ -84,6 +84,8 @@ def host_install(args):
         '--device', args.device, '--filesystem', args.filesystem,
         '--image', args.image, '--ssh-key', '/run/dcore-install.pub',
     ]
+    if args.no_grow_root:
+        command.append('--no-grow-root')
     # Neither the file path nor its contents are passed into the container.
     run(command, input=secret)
 
@@ -203,6 +205,8 @@ def inside_install(args):
             '--target-imgref', args.image, '--root-ssh-authorized-keys', args.ssh_key,
             '--karg', f'rd.luks.name={luks_uuid}=dcore-root', '--karg', 'console=tty0',
         ]
+        if args.no_grow_root:
+            command += ['--karg', 'dcore.grow-root=0']
         if args.filesystem == 'xfs':
             command.append('--allow-missing-verity')
         run(command)
@@ -278,6 +282,7 @@ def main():
     parser.add_argument('--image', required=True)
     parser.add_argument('--ssh-key', required=True)
     parser.add_argument('--passphrase-file')
+    parser.add_argument('--no-grow-root', action='store_true')
     parser.add_argument('--requested-device')
     parser.add_argument('--identity')
     args = parser.parse_args()

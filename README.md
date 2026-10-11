@@ -23,7 +23,7 @@ Release downloads are checked against upstream SHA-256 checksums.
 - GitHub release artifacts: 10 GiB raw, QEMU QCOW2 and Incus VM images.
 - Incus guest agent and installers for Incus VMs and physical block devices.
 - ext4 by default, with Btrfs and XFS installer options; automatic root growth
-  when the unencrypted root partition is last and disk space follows it.
+  when the root partition is last and disk space follows it.
 - Optional passphrase-protected LUKS2 root in `block_install`.
 - `core` administrator with passwordless sudo; installation SSH keys shared
   with root. Password-based SSH login is disabled.
@@ -675,8 +675,11 @@ triggered by automatic updates. No TPM unlocking or stored unlock key is
 configured. Ensure console access before enabling automatic reboots.
 The encrypted installer requires a destination of at least 10 GiB and an image
 with dcore's encryption tools and initramfs support; it checks these before
-formatting. The LUKS partition initially uses the remaining disk space. Automatic
-root growth currently skips encrypted mappings if you later enlarge the disk.
+formatting. The LUKS partition initially uses the remaining disk space. If you
+later enlarge the disk, the initramfs grows the final LUKS2 partition before
+unlocking it, and the normal boot service grows the filesystem afterward.
+This uses the usual unlock prompt once; it stores no password or unlock key.
+After enlarging a disk while it is running, reboot to apply encrypted growth.
 
 For unattended provisioning, `--passphrase-file PATH` reads a private regular
 file owned by the invoking user or root, with permissions `0600` or `0400`.
@@ -881,9 +884,16 @@ Encrypted-disk validation installed and booted LUKS2 roots using ext4, Btrfs and
 XFS under QEMU. Each unlocked into `/dev/mapper/dcore-root`, mounted its EFI
 partition writable with private permissions, and had no failed systemd units.
 An incorrect passphrase was rejected and SSH was unavailable before unlocking.
-The tests also checked core's passwordless sudo and that encrypted root growth
-is skipped. An actual bootc image upgrade on an encrypted disk and bare-metal
+The tests also checked core's passwordless sudo. An actual bootc image upgrade on an encrypted disk and bare-metal
 encrypted boots remain unverified.
+
+Encrypted-root growth validation additionally booted native 10 GiB LUKS2 disks
+with ext4, Btrfs and XFS under QEMU, expanded each to 14 GiB and then 16 GiB,
+and verified partition, mapping and filesystem sizes after each boot. Every
+boot used one normal password unlock, preserved a data sentinel and read-only
+`/usr`, and had no failed systemd units. The final image's opt-out test kept the
+original encrypted sizes after disk expansion. CI integration tests cover both
+growth stages, partial recovery, mount permissions, and non-final encrypted roots.
 
 ## Automatic root disk growth
 
@@ -912,10 +922,20 @@ attempt can recover on the next boot.
 
 The commands run in a private mount namespace against the physical backing
 filesystem. The host's existing mount flags and read-only `/usr` stay intact.
-Containers, whole-device filesystems, non-GPT tables, encryption/device-mapper,
-LVM, RAID, multi-device Btrfs, and a root followed by another partition are
-skipped. Errors are logged as a failed service; this service is not required
-for normal boot and never deliberately reboots the machine.
+Direct inline LUKS2 roots created by `block_install --encrypt` are supported.
+The initramfs hook grows the final partition before `dcore-root` is unlocked;
+unlocking opens the mapping at its new full size. The normal boot service then
+grows ext4, single-device Btrfs or XFS through that mapping. A running encrypted
+mapping is not resized interactively: reboot after expanding its disk. This
+also recovers an interrupted run between partition and filesystem growth.
+
+Containers, whole-device filesystems, non-GPT tables, LVM, RAID, nested mappings,
+multi-device Btrfs, detached LUKS headers, LUKS1, integrity/reencryption and fixed
+LUKS2 segments, and a root followed by another partition are skipped. The pre-unlock stage cannot inspect the encrypted filesystem: unsupported
+filesystem layouts are left unchanged by the later filesystem stage, even if the
+partition has already grown. Filesystem-stage errors mark the boot service as
+failed; pre-unlock errors are logged and normal password unlocking continues.
+Neither growth stage is required for normal boot or deliberately reboots the machine.
 
 Inspect the backing mount, partition sizes and growth log after boot:
 
@@ -927,7 +947,14 @@ systemctl status dcore-grow-root.service
 sudo /usr/libexec/dcore/grow-root --dry-run
 ```
 
-To reserve trailing disk space for another purpose, mask the service **before**
+To disable both stages for an encrypted installation, use
+`block_install --encrypt --no-grow-root ...`. This adds `dcore.grow-root=0` to
+the kernel command line, which disables the pre-unlock hook and boot service.
+Custom bootc installs can use `--karg dcore.grow-root=0` too. A systemd mask
+inside encrypted `/etc` cannot disable the earlier initramfs stage because
+that filesystem is still locked.
+
+For an unencrypted root, to reserve trailing space, mask the service **before**
 booting the disk on a larger device. On an installed system:
 
 ```bash

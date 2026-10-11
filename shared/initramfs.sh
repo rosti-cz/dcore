@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Adapted from bootcrew/mono/shared/initramfs.sh (Apache-2.0).
 set -euo pipefail
-install -d /usr/lib/dracut/dracut.conf.d
+install -d /usr/lib/dracut/dracut.conf.d /usr/lib/dracut/modules.d/94dcore-grow-root
+install -m 0755 /dcore-grow-dracut/module-setup.sh /usr/lib/dracut/modules.d/94dcore-grow-root/module-setup.sh
 printf 'systemdsystemconfdir=/etc/systemd/system\nsystemdsystemunitdir=/usr/lib/systemd/system\n' > /usr/lib/dracut/dracut.conf.d/30-bootcrew-fix-bootc-module.conf
 cat > /usr/lib/dracut/dracut.conf.d/30-bootcrew-bootc-container-build.conf <<'EOF'
 reproducible=yes
 hostonly=no
 compress=zstd
-add_dracutmodules+=" bootc ostree zfs crypt systemd-cryptsetup "
+add_dracutmodules+=" bootc ostree zfs crypt systemd-cryptsetup dcore-grow-root "
 EOF
 mapfile -t kernels < <(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
 [[ ${#kernels[@]} == 1 ]]

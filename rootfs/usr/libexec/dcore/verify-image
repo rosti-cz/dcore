@@ -11,9 +11,11 @@ test -s "/usr/lib/modules/${kernel}/initramfs.img"
 modinfo -k "$kernel" zfs > /dev/null
 initramfs="/usr/lib/modules/${kernel}/initramfs.img"
 modules=$(lsinitrd -m "$initramfs")
-for module in bootc ostree zfs crypt systemd-cryptsetup; do
+for module in bootc ostree zfs crypt systemd-cryptsetup dcore-grow-root; do
     grep -qx "$module" <<< "$modules"
 done
+grow_hook=$(lsinitrd -f usr/lib/systemd/system/dcore-grow-luks-root.service "$initramfs")
+grep -q -- '--initrd-luks-root dcore-root' <<< "$grow_hook"
 root_config=$(lsinitrd -f usr/lib/ostree/prepare-root.conf "$initramfs")
 grep -q 'enabled = yes' <<< "$root_config"
 for unit in systemd-timesyncd.service fstrim.timer dcore-grow-root.service dcore-homebrew.service; do

@@ -45,6 +45,7 @@ RUN ldconfig
 RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     --mount=type=bind,source=scripts/configure-system.sh,target=/configure-system.sh \
     --mount=type=bind,source=shared/initramfs.sh,target=/initramfs.sh \
+    --mount=type=bind,source=shared/dracut/94dcore-grow-root,target=/dcore-grow-dracut,ro \
     /configure-system.sh && /initramfs.sh
 RUN --mount=type=bind,source=shared/bootc-rootfs.sh,target=/bootc-rootfs.sh \
     sed -i 's|^HOME=.*|HOME=/var/home|' /etc/default/useradd && \
