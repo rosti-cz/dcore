@@ -63,7 +63,7 @@ if [[ -n $ssh_key ]]; then
     [[ -f $ssh_key ]] || { echo "Public key not found: $ssh_key" >&2; exit 2; }
     [[ $(head -c 32 "$ssh_key") == ssh-* || $(head -c 32 "$ssh_key") == ecdsa-* ]] || { echo 'Expected an OpenSSH public key' >&2; exit 2; }
 fi
-helper="${name}-installer"; volume="${name}-boot"; alias="${name}-release"
+helper="${name}-installer"; volume="${name}-installer-root"; alias="${name}-release"
 # Enumerate first so an unavailable daemon cannot be mistaken for absent resources.
 instances=$(incus list --format=json)
 for candidate in "$name" "$helper"; do
@@ -133,39 +133,77 @@ if [[ -n $release ]]; then
         -c security.secureboot=false -d "root,size=$disk"
     guest_created=true
 else
-    echo "Creating temporary Debian installer and NEW volume $pool/$volume"
+    echo "Preparing temporary Debian root volume $pool/$volume"
     incus init images:debian/13 "$helper" --vm -s "$pool" -p "$profile" \
         -c "limits.cpu=$cpu" -c "limits.memory=$memory" -d root,size=20GiB
     helper_created=true
     incus start "$helper"
     wait_agent "$helper"
-    incus storage volume create "$pool" "$volume" --type=block "size=$disk"
+    incus storage volume create "$pool" "$volume" --type=block size=20GiB
     volume_created=true
     incus config device add "$helper" target disk pool="$pool" source="$volume" io.bus=virtio-blk
-    incus exec "$helper" -- bash -eu -c 'apt-get update; apt-get install -y podman'
+    incus exec "$helper" -- bash -eu -c 'apt-get update; apt-get install -y qemu-utils'
     incus exec "$helper" -- udevadm settle
     incus exec "$helper" -- test -b /dev/disk/by-id/virtio-incus_target
+    # Export the immutable base image, never copy the helper's mounted root disk.
+    # Split VM image exports use TARGET.root for the qcow2 disk.
+    base_image=$(incus config get "$helper" volatile.base_image)
+    [[ $base_image =~ ^[a-f0-9]{64}$ ]] || { echo 'Missing Debian base image fingerprint' >&2; exit 1; }
+    incus image export "$base_image" "$work/debian" --vm
+    [[ -s $work/debian.root ]] || { echo 'Missing Debian qcow2 disk in image export' >&2; exit 1; }
+    incus file push "$work/debian.root" "$helper/root/debian.qcow2"
+    incus exec "$helper" -- qemu-img convert -n -f qcow2 -O raw \
+        /root/debian.qcow2 /dev/disk/by-id/virtio-incus_target
+    incus stop "$helper"
+    incus config device remove "$helper" target
+
+    incus init "$name" --empty --vm -s "$pool" -p "$profile" \
+        -c "limits.cpu=$cpu" -c "limits.memory=$memory" \
+        -c security.secureboot=false -d "root,size=$disk"
+    guest_created=true
+    # Replace both devices atomically: path=/ identifies the managed disk.
+    # A local root device also masks the profile's inherited root disk.
+    # Debian's growpart service expects its boot disk on the SCSI bus (/dev/sda).
+    incus list "$name" --format=json | jq -e --arg name "$name" --arg pool "$pool" --arg volume "$volume" '
+        .[] | select(.name == $name) |
+        if .expanded_devices.os != null then error("Profile already defines an os device") else . end |
+        if .devices.root.type != "disk" or .devices.root.path != "/" then
+            error("Expected a managed root disk") else . end |
+        .devices.os = (.devices.root + {type: "disk", path: "/", pool: $pool,
+            "io.bus": "virtio-blk", "boot.priority": "0"}) |
+        .devices.root = {type: "disk", pool: $pool, source: $volume,
+            "io.bus": "virtio-scsi", "boot.priority": "10"} |
+        {architecture, config, devices, ephemeral, profiles, description}
+    ' > "$work/instance.json"
+    incus config edit "$name" < "$work/instance.json"
+    incus start "$name"
+    wait_agent "$name"
+    incus exec "$name" -- bash -eu -c 'apt-get update; apt-get install -y podman'
+    incus exec "$name" -- udevadm settle
+    incus exec "$name" -- test -b /dev/disk/by-id/virtio-incus_os
     key_args=(); key_mount=()
     if [[ -n $ssh_key ]]; then
-        incus file push "$ssh_key" "$helper/root/dcore-install.pub"
+        incus file push "$ssh_key" "$name/root/dcore-install.pub"
         key_mount=(-v /root/dcore-install.pub:/run/dcore-install.pub:ro)
         key_args=(--root-ssh-authorized-keys /run/dcore-install.pub)
     fi
-    incus exec "$helper" -- podman pull "$image"
+    incus exec "$name" -- podman pull "$image"
     filesystem_args=(--filesystem "$filesystem")
     if [[ $filesystem == xfs ]]; then filesystem_args+=(--allow-missing-verity); fi
-    incus exec "$helper" -- podman run --rm --pull=never --privileged --pid=host --ipc=host \
+    incus exec "$name" -- podman run --rm --pull=never --privileged --pid=host --ipc=host \
         --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
-        "${key_mount[@]}" "$image" bootc install to-disk /dev/disk/by-id/virtio-incus_target \
+        "${key_mount[@]}" "$image" bootc install to-disk /dev/disk/by-id/virtio-incus_os \
         "${filesystem_args[@]}" --composefs-backend --bootloader systemd --disable-selinux \
         --generic-image --target-imgref "$image" "${key_args[@]}" --karg console=ttyS0,115200n8
-    incus stop "$helper"
-    incus config device remove "$helper" target
-    incus init "$name" --empty --vm -s "$pool" -p "$profile" \
-        -c "limits.cpu=$cpu" -c "limits.memory=$memory" \
-        -c security.secureboot=false -d root,size=1GiB
-    guest_created=true
-    incus config device add "$name" os disk pool="$pool" source="$volume" io.bus=virtio-blk boot.priority=10
+    incus stop "$name"
+    # Detach the installer before verifying boot from the managed OS disk.
+    # type=none prevents the profile's root disk from reappearing.
+    incus list "$name" --format=json | jq -e --arg name "$name" '
+        .[] | select(.name == $name) |
+        .devices.root = {type: "none"} | .devices.os["boot.priority"] = "10" |
+        {architecture, config, devices, ephemeral, profiles, description}
+    ' > "$work/instance.json"
+    incus config edit "$name" < "$work/instance.json"
 fi
 incus start "$name"
 wait_agent "$name"
@@ -177,8 +215,14 @@ if [[ -n $release && -n $ssh_key ]]; then
     incus exec "$name" -- bash -eu -c 'home=$(getent passwd core | cut -d: -f6); install -d -m 0700 -o core -g core "$home/.ssh"; install -m 0600 -o core -g core /root/.ssh/authorized_keys "$home/.ssh/authorized_keys"'
 fi
 incus exec "$name" -- bootc status
+if [[ $volume_created == true ]]; then
+    # Keep the detached installer available until the final boot is verified.
+    incus storage volume delete "$pool" "$volume"
+    volume_created=false
+fi
+if [[ $helper_created == true ]]; then
+    incus delete "$helper"
+    helper_created=false
+fi
 success=true
 printf '\nReady: incus exec %s -- bash\nConsole: incus console %s\n' "$name" "$name"
-if [[ $volume_created == true ]]; then
-    printf 'OS volume: %s/%s (remove separately after deleting the VM)\n' "$pool" "$volume"
-fi

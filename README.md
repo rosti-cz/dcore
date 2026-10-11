@@ -234,13 +234,15 @@ with `--filesystem btrfs` or `xfs` is rejected before creating resources.
 
 The SSH public key is optional: the Incus guest agent provides administrator
 access. The script refuses existing resource names and never uses a host disk.
-It checks the new OS volume's virtio serial, installs with bootc, then waits up
+It checks the managed OS disk's virtio serial, installs with bootc, then waits up
 to ten minutes for the dcore agent. It removes its temporary installer on success;
 on failure it prints available serial-console logs and removes resources it
 created. Pass `--keep-on-failure` to preserve failed VMs and volumes for inspection.
-The custom OS volume persists on success; delete it separately when
-removing the VM. Use `--help` for all options. OCI mode needs a publicly pullable
-image; it does not copy host registry credentials into the guest.
+The OS disk belongs to the VM and is removed when the VM is deleted. The
+temporary custom root volume is detached before the final boot and deleted
+after the agent and `bootc status` checks succeed. Use `--help` for all options.
+OCI mode needs a publicly pullable image; it does not copy host registry
+credentials into the guest.
 
 For a published release, use its actual tag:
 
@@ -253,12 +255,11 @@ incus exec dcore-release -- bash
 If the agent wait times out, use `--keep-on-failure` and inspect
 `incus console INSTANCE --show-log`. Confirm the Incus host can supply its VM
 agent (Debian-packaged hosts may need `incus-agent` installed on the host too).
-After testing an OCI installation, remove its VM and separate OS volume:
+After testing an OCI installation, remove its VM and managed OS disk:
 
 ```bash
 incus stop dcore-test
 incus delete dcore-test
-incus storage volume delete default dcore-test-boot
 ```
 
 A release import uses the instance's root disk, so deleting `dcore-release`
@@ -270,70 +271,38 @@ runs that host-matched binary. No agent credentials are baked into the image and
 no writes to immutable `/usr` are required. A regular QEMU VM without the Incus
 port does not start the agent.
 
-### Manual installation
+### Installation disk layout
 
 Use an **amd64** Incus host with VM support, an initialized storage pool, and a
 profile providing network access (normally the default profile and `incusbr0`).
 Make the `dcore` GHCR package public before using this anonymous-pull example.
-The image name is `ghcr.io/rosti-cz/dcore:trixie`.
-
-An empty VM cannot run an installer by itself. First use a temporary Debian VM
-to install onto a new custom block volume, then attach that volume to an empty
-VM. `bootc install to-disk` erases its target; the commands below select only the
-new volume by its Incus device serial, rather than a guessed `/dev/sdX` name.
-Run these commands in Bash on your Incus host:
+Run the installer from this repository:
 
 ```bash
 POOL=default                         # change to your Incus storage pool
 IMAGE=ghcr.io/rosti-cz/dcore:trixie
 SSH_KEY="$HOME/.ssh/id_ed25519.pub"   # your existing public SSH key
 
-test -f "$SSH_KEY" || { echo "Set SSH_KEY to an existing public key"; exit 1; }
-incus storage list
-incus launch images:debian/13 dcore-installer --vm -s "$POOL" \
-  -c limits.cpu=2 -c limits.memory=4GiB -d root,size=20GiB
+./scripts/incus_install dcore-test --pool "$POOL" --image "$IMAGE" \
+  --disk 10GiB --ssh-key "$SSH_KEY"
+incus console dcore-test
 ```
 
-Wait until `incus exec dcore-installer -- true` succeeds (the Debian guest agent
-needs time to start), then continue in the same shell:
+The installer creates a temporary Debian helper VM and a 20 GiB custom block
+volume named `dcore-test-installer-root`. It exports the helper's clean Debian
+base image and uses `qemu-img` inside the helper to populate the temporary volume;
+it never copies a running root filesystem or accesses storage-driver host paths.
+The helper is stopped and the volume detached before attaching it to the final VM.
 
-```bash
-incus storage volume create "$POOL" dcore-boot --type=block size=10GiB
-incus config device add dcore-installer target disk \
-  pool="$POOL" source=dcore-boot io.bus=virtio-blk
-incus file push "$SSH_KEY" dcore-installer/root/dcore-test.pub
-incus exec dcore-installer -- bash -eu -c \
-  'apt-get update; apt-get install -y podman'
-incus exec dcore-installer -- udevadm settle
-incus exec dcore-installer -- lsblk -o NAME,SIZE,SERIAL,MOUNTPOINTS
-incus exec dcore-installer -- test -b /dev/disk/by-id/virtio-incus_target
-incus exec dcore-installer -- podman pull "$IMAGE"
-
-incus exec dcore-installer -- podman run --rm --pull=never \
-  --privileged --pid=host --ipc=host \
-  --security-opt label=disable \
-  -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
-  -v /root/dcore-test.pub:/run/dcore-test.pub:ro \
-  "$IMAGE" bootc install to-disk /dev/disk/by-id/virtio-incus_target \
-  --filesystem ext4 --composefs-backend --bootloader systemd \
-  --disable-selinux --generic-image --target-imgref "$IMAGE" \
-  --root-ssh-authorized-keys /run/dcore-test.pub \
-  --karg console=ttyS0,115200n8
-
-incus stop dcore-installer
-incus config device remove dcore-installer target
-incus init dcore-test --empty --vm -s "$POOL" \
-  -c limits.cpu=2 -c limits.memory=4GiB \
-  -c security.secureboot=false -d root,size=1GiB
-incus config device add dcore-test os disk \
-  pool="$POOL" source=dcore-boot io.bus=virtio-blk boot.priority=10
-incus start dcore-test --console
-```
-
-The 1 GiB root device satisfies Incus's instance layout; the VM boots from the
-10 GiB `dcore-boot` volume. The installer VM must be stopped and the volume
-detached before attaching it to the test VM. Do not attach a writable OS volume
-to two running VMs. Exit the serial console with Ctrl+A, Q.
+During installation, the final VM boots from that custom volume as device `root`.
+Its managed disk is device `os`, with `path=/` and the size requested by `--disk`.
+Podman runs bootc in the Debian environment against
+`/dev/disk/by-id/virtio-incus_os`. The script stops the VM, detaches temporary
+`root`, then boots from `os` and verifies the guest agent and `bootc status`.
+Only after verification does it delete the temporary volume and helper VM.
+The remaining `root` device has `type=none` to mask the profile's inherited root
+disk; it consumes no storage. Deleting the final VM also deletes its OS disk.
+Exit the serial console with Ctrl+A, Q.
 
 The explicit native composefs backend is required: bootc v1.17.1 supports
 systemd-boot with that backend, while this image does not include GRUB/bootupd.
@@ -364,8 +333,6 @@ After shutting down the test guest, remove the test resources if desired:
 ```bash
 incus stop dcore-test
 incus delete dcore-test
-incus delete dcore-installer
-incus storage volume delete "$POOL" dcore-boot
 ```
 
 See the official [Incus VM creation instructions](https://linuxcontainers.org/incus/docs/main/howto/instances_create/),
@@ -988,11 +955,11 @@ incus restart dcore-release
 
 If `root` was already overridden locally, use
 `incus config device set dcore-release root size=20GiB` instead. For an OCI
-installation created by our helper, its OS disk is a separate custom volume:
+installation created by our helper, enlarge its managed `os` disk:
 
 ```bash
 incus stop dcore-test
-incus storage volume set default dcore-test-boot size=20GiB
+incus config device set dcore-test os size=20GiB
 incus start dcore-test
 ```
 

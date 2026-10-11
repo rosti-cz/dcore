@@ -38,16 +38,6 @@ class Installers(unittest.TestCase):
         cls.key = cls.work / 'key'
         subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(cls.key)], check=True)
         for name, source in {
-            'incus': '''import json,os,sys
-with open(os.environ['DCORE_TEST_LOG'],'a') as out: out.write(json.dumps(["incus"]+sys.argv[1:])+"\\n")
-if sys.argv[1:3] == ['list','--format=json'] or sys.argv[1:4] == ['storage','volume','list']:
- print('[]')
-''',
-            'jq': '''import json,sys
-items=json.load(sys.stdin)
-name=sys.argv[sys.argv.index('--arg')+2]
-sys.exit(0 if any(x.get('name')==name for x in items) else 1)
-''',
             'podman': '''import json,os,subprocess,sys
 args=sys.argv[1:]
 with open(os.environ['DCORE_TEST_LOG'],'a') as out: out.write(json.dumps(['podman']+args)+"\\n")
@@ -97,25 +87,7 @@ if args[0]=='pull':
     def block_args(self):
         return [self.loop, '--ssh-key', str(self.key) + '.pub', '--confirm-device', self.loop]
 
-    def test_incus_filesystems(self):
-        for filesystem in (None, 'ext4', 'btrfs', 'xfs'):
-            self.log.write_text('')
-            args = ['dcore-test'] + (['--filesystem', filesystem] if filesystem else [])
-            result = self.run_script('incus_install', args)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            install = next(c for c in self.calls() if 'to-disk' in c)
-            self.assertEqual(install[install.index('--filesystem') + 1], filesystem or 'ext4')
-            self.assertEqual('--allow-missing-verity' in install, filesystem == 'xfs')
-            self.assertEqual(install[install.index('to-disk') + 1], '/dev/disk/by-id/virtio-incus_target')
-
-    def test_invalid_filesystems_and_release_conversion(self):
-        for filesystem in ('zfs', 'btrfs', 'xfs'):
-            self.log.write_text('')
-            args = ['dcore-test', '--filesystem', filesystem]
-            if filesystem != 'zfs': args += ['--release', 'v1.0.0']
-            result = self.run_script('incus_install', args)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(self.calls(), [])
+    def test_invalid_block_filesystem(self):
         result = self.run_script('block_install', self.block_args() + ['--filesystem', 'zfs'])
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), [])

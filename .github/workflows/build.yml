@@ -28,6 +28,7 @@ jobs:
         run: |
           sudo modprobe loop
           sudo python3 tests/test-installers.py
+          python3 tests/test-incus-install.py
           sudo python3 tests/test-encrypted-install.py
           python3 tests/test-grow-root-cmdline.py
       - id: config
