@@ -16,6 +16,10 @@ import time
 import uuid
 
 sys.dont_write_bytecode = True
+password_spec = importlib.util.spec_from_file_location(
+    'install_password', Path(__file__).with_name('install-password.py'))
+password_tools = importlib.util.module_from_spec(password_spec)
+password_spec.loader.exec_module(password_tools)
 
 
 def validate_passphrase(value):
@@ -25,8 +29,8 @@ def validate_passphrase(value):
         raise ValueError('Passphrase must be a single line without NUL characters.')
     try:
         value.decode('utf-8')
-    except UnicodeDecodeError as error:
-        raise ValueError('Passphrase must be UTF-8 text for console unlocking.') from error
+    except UnicodeDecodeError:
+        raise ValueError('Passphrase must be UTF-8 text for console unlocking.') from None
     return value
 
 
@@ -63,7 +67,15 @@ def run(command, **kwargs):
 
 
 def host_install(args):
-    secret = read_passphrase_file(args.passphrase_file) if args.passphrase_file else prompt_passphrase()
+    if getattr(args, 'core_password_stdin', False):
+        if args.passphrase_file:
+            raise ValueError('--core-password-stdin with --encrypt cannot use --passphrase-file.')
+        core_password, secret = password_tools.read_credentials(sys.stdin.buffer)
+        payload = password_tools.encode_credentials(core_password, secret)
+        del core_password
+    else:
+        secret = read_passphrase_file(args.passphrase_file) if args.passphrase_file else prompt_passphrase()
+        payload = secret
     # Prompting can take minutes. Repeat the same host-side identity/busy check
     # immediately before crossing into the container's private mount namespace.
     checker_path = Path(__file__).with_name('check-block-device.py')
@@ -78,12 +90,19 @@ def host_install(args):
         'podman', 'run', '--rm', '--pull=never', '-i', '--privileged',
         '--pid=host', '--ipc=host', '--security-opt', 'label=disable',
         '-v', '/dev:/dev', '-v', '/var/lib/containers:/var/lib/containers',
-        '-v', f'{Path(__file__).resolve()}:/run/dcore-install-encrypted.py:ro',
-        '-v', f'{args.ssh_key}:/run/dcore-install.pub:ro', args.image,
-        'python3', '/run/dcore-install-encrypted.py', '--inside',
-        '--device', args.device, '--filesystem', args.filesystem,
-        '--image', args.image, '--ssh-key', '/run/dcore-install.pub',
+        '-v', f'{Path(__file__).resolve().parent}:/run/dcore-install-lib:ro',
     ]
+    if args.ssh_key:
+        command += ['-v', f'{args.ssh_key}:/run/dcore-install.pub:ro']
+    command += [args.image,
+        'python3', '/run/dcore-install-lib/install-encrypted.py', '--inside',
+        '--device', args.device, '--filesystem', args.filesystem,
+        '--image', args.image,
+    ]
+    if args.ssh_key:
+        command += ['--ssh-key', '/run/dcore-install.pub']
+    if getattr(args, 'core_password_stdin', False):
+        command.append('--core-password-stdin')
     if getattr(args, 'target_image', None):
         command += ['--target-image', args.target_image]
     if getattr(args, 'local', False):
@@ -92,7 +111,7 @@ def host_install(args):
     if args.no_grow_root:
         command.append('--no-grow-root')
     # Neither the file path nor its contents are passed into the container.
-    run(command, input=secret)
+    run(command, input=payload)
 
 
 def preflight():
@@ -141,7 +160,13 @@ def inside_install(args):
         raise ValueError(f'Image lacks {formatter}; disk unchanged.')
     if int(subprocess.check_output(['blockdev', '--getsize64', args.device])) < 10 * 1024**3:
         raise ValueError('Encrypted installation requires a disk of at least 10 GiB; disk unchanged.')
-    secret = validate_passphrase(sys.stdin.buffer.read(4097))
+    core_password = None
+    if getattr(args, 'core_password_stdin', False):
+        core_password, secret = password_tools.read_credentials(sys.stdin.buffer)
+        if not shutil.which('chpasswd'):
+            raise ValueError('Image lacks chpasswd; disk unchanged.')
+    else:
+        secret = validate_passphrase(sys.stdin.buffer.read(4097))
     descriptor = os.memfd_create('dcore-luks-passphrase', os.MFD_CLOEXEC)
     os.write(descriptor, secret)
     del secret
@@ -207,9 +232,11 @@ def inside_install(args):
             '--generic-image', '--root-mount-spec', '/dev/mapper/dcore-root',
             # bootc otherwise emits systemd.mount-extra=...:ro for /boot.
             '--boot-mount-spec', '',
-            '--target-imgref', getattr(args, 'target_image', None) or args.image, '--root-ssh-authorized-keys', args.ssh_key,
+            '--target-imgref', getattr(args, 'target_image', None) or args.image,
             '--karg', f'rd.luks.name={luks_uuid}=dcore-root', '--karg', 'console=tty0',
         ]
+        if args.ssh_key:
+            command += ['--root-ssh-authorized-keys', args.ssh_key]
         if getattr(args, 'local', False):
             command.append('--skip-fetch-check')
         if args.no_grow_root:
@@ -232,6 +259,9 @@ def inside_install(args):
             if existing and not existing.endswith('\n'):
                 output.write('\n')
             output.write(f'UUID={boot_uuid} /boot vfat rw,nosuid,nodev,umask=0077 0 2\n')
+        if core_password is not None:
+            password_tools.provision_core_password(deployment, core_password)
+            del core_password
         run(['umount', '--recursive', str(deployment)])
         deployment_mounted = False
         # Standalone install-finalize is OSTree-only in bootc 1.17; the normal
@@ -289,12 +319,17 @@ def main():
     parser.add_argument('--image', required=True)
     parser.add_argument('--target-image')
     parser.add_argument('--local', action='store_true')
-    parser.add_argument('--ssh-key', required=True)
+    parser.add_argument('--ssh-key')
+    parser.add_argument('--core-password-stdin', action='store_true')
     parser.add_argument('--passphrase-file')
     parser.add_argument('--no-grow-root', action='store_true')
     parser.add_argument('--requested-device')
     parser.add_argument('--identity')
     args = parser.parse_args()
+    if not args.ssh_key and not args.core_password_stdin:
+        raise ValueError('Supply --ssh-key or --core-password-stdin for administrator access.')
+    if args.core_password_stdin and args.passphrase_file:
+        raise ValueError('--core-password-stdin with --encrypt cannot use --passphrase-file.')
     if args.inside:
         inside_install(args)
     else:

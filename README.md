@@ -41,7 +41,7 @@ Release downloads are checked against upstream SHA-256 checksums.
 
 - Default administrator: `core`, with passwordless sudo and shared installation
   SSH keys for root and core.
-- Shell and terminal: fish, htop, vim, tmux, iotop, ncdu, duf.
+- Shell and terminal: fish (root/core default), fastfetch, htop, vim, tmux, iotop, ncdu, duf.
 - Networking and APIs: nmap, wget, curl, HTTPie (`http`/`https`),
   iputils-tracepath (`tracepath`), rsync, rclone.
 - Development and files: git, jq, unzip, bat (`batcat`), ripgrep (`rg`),
@@ -110,7 +110,8 @@ preserved. See [systemd's TPM policy documentation](https://www.freedesktop.org/
 
 ## Core user, Homebrew and Distrobox
 
-The image creates `core` with a Bash login shell and persistent home at
+Root and core use Fish as their default login shell. The image creates `core`
+with a persistent home at
 `/var/home/core` (`/home/core` resolves there too). Its password is locked by
 default; use `sudo -iu core` from an administrator account or add an SSH public
 key to its home directory. `core` has passwordless sudo for all commands as
@@ -257,13 +258,22 @@ disabled**. Allow **16 GiB RAM** for the live environment and image staging, and
 select a system drive of at least **10 GiB**. Image staging uses RAM and never
 uses the destination disk as temporary storage.
 
-The console installer lists eligible whole drives with size, model and serial,
-asks for the `core` password twice with input hidden, and requires typing
-`ERASE /dev/DEVICE` before proceeding. It excludes the installer medium,
-mounted disks, active swap and storage mappings, and rechecks drive identity
-after loading the bundled image. Installation uses `block_install` with ext4
-and an unencrypted root. The existing standalone installer's filesystem and
-LUKS2 options remain available separately.
+The console installer lists eligible whole drives with size, model and serial.
+Select **ext4** (default), **Btrfs**, or **XFS**, then choose an unencrypted root
+(default) or **LUKS2 encryption**. All three filesystems support both modes.
+Enter the `core` password twice with input hidden; encrypted installations also
+ask for a separate disk-unlock passphrase twice. The installer displays the
+drive, filesystem and encryption settings and requires typing `ERASE /dev/DEVICE`
+before proceeding. It excludes the installer medium, mounted disks, active swap
+and storage mappings, and rechecks drive identity after loading the bundled
+image. Both modes install through `block_install` without contacting a registry.
+
+LUKS2 protects the root filesystem, `/etc`, `/var`, home directories and container
+data. The EFI partition, kernel and initramfs remain unencrypted. Unlock the disk
+at the console on **every boot**, including automatic-update reboots; SSH becomes
+available after unlocking. The installer does not store an unlock key or enroll
+a TPM. After installation, optional TPM unlocking is available through
+`djust enroll-tpm`, subject to dcore's existing Secure Boot limitations.
 
 After installation, remove/eject the ISO and reboot. Log in at the local console
 as `core` with your chosen password; core has passwordless sudo. The same password
@@ -290,6 +300,8 @@ sudo scripts/build-installer-iso.sh \
 ```
 
 The builder uses a disposable privileged Debian container with `live-build`.
+The manifest lists the supported filesystems and encryption modes; it describes
+installer capabilities, not a particular server's selected disk configuration.
 Release publication rejects ISOs exceeding GitHub's 2 GiB per-asset limit.
 
 Local validation used a network-disconnected UEFI QEMU VM, the ISO attached as
@@ -302,7 +314,14 @@ the cgroupfs Podman configuration without manual changes. The legacy IDE
 virtual-CD controller failed to boot with the local OVMF firmware; use USB or
 SCSI virtual-CD media for this QEMU test setup. Core-only SSH password login
 and incorrect-password rejection were additionally verified with a real SSH
-server in an isolated dcore container. Bare-metal boots remain unverified.
+server in an isolated dcore container. The filesystem/encryption matrix additionally
+installed and booted all six combinations on 10 GiB virtual disks, checking the
+backing filesystem, password SSH login, sudo and update reference. Encrypted
+cases rejected an incorrect unlock passphrase, kept SSH unavailable before
+unlocking, and recovered with the correct passphrase on a subsequent boot. An
+offline ISO installation exercised XFS/LUKS2 and preserved a second test disk.
+Fish login with password SSH and Debian's Fastfetch package were also checked
+in disposable containers. Bare-metal boots remain unverified.
 
 ## Testing options
 
@@ -773,6 +792,17 @@ Combine it with `--encrypt` and, if needed, `--confirm-device DEVICE`. The
 installer passes the secret through stdin and an anonymous memory descriptor;
 it does not store an unlock key on the installed disk. Keep the source password
 file private and manage its lifetime yourself.
+
+Password-based provisioning also works with encryption. With
+`--encrypt --core-password-stdin --confirm-device DEVICE`, stdin must contain
+a UTF-8 JSON object with exactly `version` (integer `1`), `core_password`, and
+`luks_passphrase`. Both secrets are validated before erasure, sent through stdin,
+and never placed in command arguments, environment variables, or persistent
+temporary files. This mode cannot be combined with `--passphrase-file`. Without
+`--encrypt`, `--core-password-stdin` continues to accept the raw core password.
+The ISO handles this protocol automatically. SSH keys remain optional when a
+core password is supplied; existing SSH-key-based encrypted installation and
+passphrase-file usage remain supported.
 
 ### Install the current OCI image from live Linux
 

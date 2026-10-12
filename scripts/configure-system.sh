@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Both accounts already exist after the Homebrew build stage. Set the image's
+# login defaults as well as the sysusers definition used for core provisioning.
+usermod --shell /usr/bin/fish root
+usermod --shell /usr/bin/fish core
 systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh fstrim.timer dcore-grow-root.service dcore-homebrew.service
 # Disable all competing image/APT update schedules, including upstream defaults.
 for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updates.timer apt-daily.timer apt-daily-upgrade.timer; do

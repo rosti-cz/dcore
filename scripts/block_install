@@ -12,7 +12,8 @@ Usage: sudo block_install DEVICE [--ssh-key PUBLIC_KEY | --core-password-stdin] 
   --image REF            OCI image (default ghcr.io/rosti-cz/dcore:trixie)
   --local                Use an already loaded image; never pull or check the registry
   --target-image REF     Registry reference for installed system updates
-  --core-password-stdin  Read core's console/SSH password from stdin (unencrypted installs)
+  --core-password-stdin  Read core's console/SSH password from stdin; with --encrypt,
+                         read version-1 JSON containing core_password and luks_passphrase
   --ssh-key PATH         Existing OpenSSH public key for root/core access
   --confirm-device PATH  Noninteractive erase confirmation; must equal DEVICE
   --help                 Show this help
@@ -50,7 +51,7 @@ while [[ $# -gt 0 ]]; do
     shift 2
 done
 target_image=${target_image:-$image}
-[[ $core_password != true || $encrypt != true ]] || { echo 'Console password provisioning currently supports unencrypted installs only.' >&2; exit 2; }
+[[ $core_password != true || $encrypt != true || -z $passphrase_file ]] || { echo '--encrypt --core-password-stdin cannot use --passphrase-file.' >&2; exit 2; }
 [[ $core_password != true || -n $confirmation_device ]] || { echo '--core-password-stdin requires --confirm-device; confirm erasure before supplying the password.' >&2; exit 2; }
 [[ -z $passphrase_file || $encrypt == true ]] || { echo '--passphrase-file requires --encrypt.' >&2; exit 2; }
 case $filesystem in
@@ -102,13 +103,15 @@ current_identity=$(python3 "$script_dir/lib/check-block-device.py" "$device")
 [[ $current_identity == "$identity" ]] || { echo 'Destination identity or size changed; disk unchanged.' >&2; exit 1; }
 if [[ $encrypt == true ]]; then
     encryption_args=()
+    if [[ -n $ssh_key ]]; then encryption_args+=(--ssh-key "$ssh_key"); fi
+    if [[ $core_password == true ]]; then encryption_args+=(--core-password-stdin); fi
     encryption_args+=(--target-image "$target_image")
     if [[ $local_image == true ]]; then encryption_args+=(--local); fi
     if [[ $no_grow_root == true ]]; then encryption_args+=(--no-grow-root); fi
     if [[ -n $passphrase_file ]]; then encryption_args+=(--passphrase-file "$passphrase_file"); fi
     python3 "$script_dir/lib/install-encrypted.py" --device "$device" \
         --requested-device "$requested_device" --identity "$identity" \
-        --filesystem "$filesystem" --image "$image" --ssh-key "$ssh_key" "${encryption_args[@]}"
+        --filesystem "$filesystem" --image "$image" "${encryption_args[@]}"
 else
     filesystem_args=(--filesystem "$filesystem")
     container_args=(); access_args=()

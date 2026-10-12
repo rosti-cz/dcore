@@ -132,6 +132,30 @@ if args[0]=='pull':
         self.assertEqual(install[install.index('--target-imgref') + 1], 'ghcr.io/rosti-cz/dcore:trixie')
         self.assertNotIn('test-console-password', json.dumps(calls) + result.stdout + result.stderr)
 
+    def test_encrypted_offline_password_dispatch(self):
+        payload = json.dumps({'version': 1, 'core_password': 'core-fixture', 'luks_passphrase': 'luks-fixture'})
+        for filesystem in ('ext4', 'btrfs', 'xfs'):
+            self.log.write_text('')
+            result = self.run_script('block_install', [self.loop, '--local', '--image', 'localhost/dcore:release',
+                '--target-image', 'ghcr.io/rosti-cz/dcore:trixie', '--core-password-stdin', '--encrypt',
+                '--filesystem', filesystem, '--confirm-device', self.loop], input=payload)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = self.calls()
+            self.assertFalse(any(c[1] == 'pull' for c in calls))
+            install = next(c for c in calls if c[:2] == ['podman', 'run'])
+            self.assertIn('--core-password-stdin', install)
+            self.assertIn('--network=none', install)
+            self.assertNotIn('--ssh-key', install)
+            self.assertEqual(install[install.index('--filesystem') + 1], filesystem)
+            self.assertNotIn('core-fixture', str(calls) + result.stdout + result.stderr)
+            self.assertNotIn('luks-fixture', str(calls) + result.stdout + result.stderr)
+
+    def test_ambiguous_encrypted_credentials_refused(self):
+        result = self.run_script('block_install', [self.loop, '--encrypt', '--core-password-stdin',
+            '--passphrase-file', str(self.key), '--confirm-device', self.loop], input='secret')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.calls(), [])
+
     def test_password_requires_explicit_confirmation(self):
         result = self.run_script('block_install', [self.loop, '--core-password-stdin'], input='test-password')
         self.assertNotEqual(result.returncode, 0)

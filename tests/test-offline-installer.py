@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Offline installer disk selection, password handling and cleanup regressions."""
 import importlib.util
+import io
 import json
 import shutil
 from pathlib import Path
@@ -116,7 +117,8 @@ class OfflineInstaller(unittest.TestCase):
              mock.patch.object(installer.Path, 'is_block_device', return_value=True):
             self.assertEqual(installer.media_devices(), {'/dev/sda1', '/dev/sda'})
 
-    def run_console(self, identity=None, confirmation='ERASE /dev/test', passwords=None):
+    def run_console(self, identity=None, confirmation='ERASE /dev/test', passwords=None,
+                    filesystem='ext4', encrypt=False, fs_choice=None, encryption_choice=None):
         disk = dict(name='/dev/test', size=20 * 1024**3)
         checker = mock.Mock()
         checker.check.return_value = identity or {'diskseq': 1}
@@ -131,8 +133,11 @@ class OfflineInstaller(unittest.TestCase):
                  mock.patch.object(installer, 'module', side_effect=[checker, password]), \
                  mock.patch.object(installer, 'media_devices', return_value={'/dev/media'}), \
                  mock.patch.object(installer, 'eligible_disks', return_value=[(disk, {'diskseq': 1})]), \
-                 mock.patch.object(installer.getpass, 'getpass', side_effect=passwords or ['test-password'] * 2), \
-                 mock.patch('builtins.input', side_effect=['1', confirmation, '']), \
+                 mock.patch.object(installer, 'check_encryption_support'), \
+                 mock.patch.object(installer.getpass, 'getpass',
+                     side_effect=passwords or (['test-password'] * 2 + (['test-disk-passphrase'] * 2 if encrypt else []))), \
+                 mock.patch('builtins.input', side_effect=['1', fs_choice if fs_choice is not None else str(('ext4', 'btrfs', 'xfs').index(filesystem) + 1),
+                     encryption_choice if encryption_choice is not None else ('2' if encrypt else '1'), confirmation, '']), \
                  mock.patch.object(installer.subprocess, 'run') as run:
                 try:
                     installer.install()
@@ -150,6 +155,86 @@ class OfflineInstaller(unittest.TestCase):
         self.assertEqual(calls[1].kwargs['input'], b'test-password')
         self.assertNotIn('test-password', str(command))
         self.assertEqual(len(calls), 2)  # No reboot unless explicitly requested.
+
+    def test_all_filesystems_with_and_without_encryption(self):
+        for filesystem in ('ext4', 'btrfs', 'xfs'):
+            for encrypt in (False, True):
+                with self.subTest(filesystem=filesystem, encrypt=encrypt):
+                    calls, error = self.run_console(filesystem=filesystem, encrypt=encrypt)
+                    self.assertIsNone(error)
+                    command = calls[1].args[0]
+                    self.assertEqual(command[command.index('--filesystem') + 1], filesystem)
+                    self.assertEqual('--encrypt' in command, encrypt)
+                    if encrypt:
+                        core, luks = password.read_credentials(io.BytesIO(calls[1].kwargs['input']))
+                        self.assertEqual((core, luks), (b'test-password', b'test-disk-passphrase'))
+                    else:
+                        self.assertEqual(calls[1].kwargs['input'], b'test-password')
+                    self.assertNotIn('test-password', str(command))
+                    self.assertNotIn('test-disk-passphrase', str(command))
+
+    def test_invalid_and_cancelled_choices_never_install(self):
+        for choice in ('9', 'zfs', 'q'):
+            calls, error = self.run_console(fs_choice=choice)
+            self.assertEqual(calls, [])
+            if choice != 'q':
+                self.assertIsInstance(error, ValueError)
+        calls, error = self.run_console(encryption_choice='q')
+        self.assertEqual(calls, [])
+        self.assertIsNone(error)
+        calls, error = self.run_console(encryption_choice='3')
+        self.assertEqual(calls, [])
+        self.assertIsInstance(error, ValueError)
+
+    def test_default_choices(self):
+        calls, error = self.run_console(fs_choice='', encryption_choice='')
+        self.assertIsNone(error)
+        command = calls[1].args[0]
+        self.assertEqual(command[command.index('--filesystem') + 1], 'ext4')
+        self.assertNotIn('--encrypt', command)
+
+    def test_encryption_passphrase_mismatch_never_loads_or_installs(self):
+        calls, error = self.run_console(encrypt=True, passwords=['core', 'core', 'disk-one', 'disk-two'])
+        self.assertRegex(str(error), 'Disk passphrases do not match')
+        self.assertEqual(calls, [])
+
+    def test_missing_live_encryption_driver_is_reported(self):
+        with mock.patch.object(installer.shutil, 'which', return_value='/usr/bin/tool'), \
+             mock.patch.object(installer.Path, 'is_file', return_value=True), \
+             mock.patch.object(installer.subprocess, 'run', return_value=mock.Mock(returncode=1)):
+            with self.assertRaisesRegex(ValueError, 'live kernel'):
+                installer.check_encryption_support()
+
+    def test_missing_mapper_rules_and_tools_fail_before_driver_load(self):
+        with mock.patch.object(installer.subprocess, 'run') as run:
+            with mock.patch.object(installer.shutil, 'which', return_value=None):
+                with self.assertRaisesRegex(ValueError, 'Missing live encryption tool'):
+                    installer.check_encryption_support()
+            with mock.patch.object(installer.shutil, 'which', return_value='/usr/bin/tool'), \
+                 mock.patch.object(installer.Path, 'is_file', return_value=False):
+                with self.assertRaisesRegex(ValueError, 'udev notification rules'):
+                    installer.check_encryption_support()
+            run.assert_not_called()
+
+    def test_secret_bundle_is_bounded_validated_and_redacted(self):
+        core = ('λ:' + 'x' * 100).encode()
+        luks = b'quote"backslash\\colon:password'
+        self.assertEqual(password.read_credentials(io.BytesIO(password.encode_credentials(core, luks))), (core, luks))
+        invalid = [b'', b'not-json-secret', b'x' * 65537,
+                   b'{"version":1,"core_password":"secret","core_password":"secret","luks_passphrase":"secret"}']
+        for data in ({'version': 2, 'core_password': 'secret', 'luks_passphrase': 'secret'},
+                     {'version': True, 'core_password': 'secret', 'luks_passphrase': 'secret'},
+                     {'version': 1, 'core_password': None, 'luks_passphrase': 'secret'},
+                     {'version': 1, 'core_password': '', 'luks_passphrase': 'secret'},
+                     {'version': 1, 'core_password': 'secret', 'luks_passphrase': 'a\nsecret'},
+                     {'version': 1, 'core_password': 'secret'},
+                     {'version': 1, 'core_password': 'secret', 'luks_passphrase': 'secret', 'extra': 'secret'}):
+            invalid.append(json.dumps(data).encode())
+        for raw in invalid:
+            with self.subTest(raw_length=len(raw)):
+                with self.assertRaises(ValueError) as raised:
+                    password.read_credentials(io.BytesIO(raw))
+                self.assertNotIn('secret', str(raised.exception))
 
     def test_replaced_disk_never_reaches_block_installer(self):
         calls, error = self.run_console(identity={'diskseq': 2})

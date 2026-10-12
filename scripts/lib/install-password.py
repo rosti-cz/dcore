@@ -7,6 +7,43 @@ import subprocess
 import sys
 import tempfile
 
+MAX_CREDENTIAL_BYTES = 65536
+
+
+def encode_credentials(core_password, luks_passphrase):
+    """Versioned stdin protocol used only with --encrypt --core-password-stdin."""
+    return json.dumps({'version': 1,
+                       'core_password': validate_password(core_password).decode('utf-8'),
+                       'luks_passphrase': validate_password(luks_passphrase).decode('utf-8')},
+                      ensure_ascii=False).encode('utf-8')
+
+
+def read_credentials(stream):
+    # Reject malformed/oversized input without echoing any part of a secret.
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Duplicate field')
+            result[key] = value
+        return result
+
+    try:
+        raw = stream.read(MAX_CREDENTIAL_BYTES + 1)
+        if len(raw) > MAX_CREDENTIAL_BYTES:
+            raise ValueError('Oversized input')
+        data = json.loads(raw.decode('utf-8'), object_pairs_hook=unique_object)
+        if not isinstance(data, dict) or set(data) != {'version', 'core_password', 'luks_passphrase'}:
+            raise ValueError('Invalid fields')
+        if type(data['version']) is not int or data['version'] != 1:
+            raise ValueError('Invalid version')
+        if not all(isinstance(data[name], str) for name in ('core_password', 'luks_passphrase')):
+            raise ValueError('Invalid secret type')
+        return (validate_password(data['core_password'].encode('utf-8')),
+                validate_password(data['luks_passphrase'].encode('utf-8')))
+    except (ValueError, TypeError, RecursionError):
+        raise ValueError('Invalid encrypted-install credential payload; disk unchanged.') from None
+
 
 def enable_core_password_ssh(deployment):
     directory = deployment / 'etc/ssh/sshd_config.d'
@@ -26,6 +63,14 @@ def validate_password(password):
     except UnicodeDecodeError:
         raise ValueError('Password must be UTF-8 text.') from None
     return password
+
+
+def provision_core_password(deployment, password):
+    validate_password(password)
+    # Use libcrypt directly, avoiding PAM runtime mounts in the offline chroot.
+    subprocess.run(['chpasswd', '--root', str(deployment), '--crypt-method', 'YESCRYPT'],
+                   input=b'core:' + password + b'\n', check=True)
+    enable_core_password_ssh(deployment)
 
 
 def root_partition(device):
@@ -57,11 +102,7 @@ def install(device, options, password):
             subprocess.run(['bootc', 'install', 'mount', '--sysroot', str(sysroot),
                             '--latest', str(deployment)], check=True)
             deployed = True
-            # Explicit libcrypt method avoids needing PAM's runtime mounts in
-            # an offline chroot. The account already exists in the dcore image.
-            subprocess.run(['chpasswd', '--root', str(deployment), '--crypt-method', 'YESCRYPT'],
-                           input=b'core:' + password + b'\n', check=True)
-            enable_core_password_ssh(deployment)
+            provision_core_password(deployment, password)
             subprocess.run(['sync', '-f', str(sysroot)], check=True)
         finally:
             # Refuse to remove mountpoints if cleanup fails.

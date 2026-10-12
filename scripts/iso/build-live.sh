@@ -32,6 +32,8 @@ podman
 python3
 openssh-client
 util-linux
+kmod
+dmsetup
 udev
 iproute2
 ca-certificates

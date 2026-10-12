@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -111,6 +112,38 @@ class DispatchTests(unittest.TestCase):
             self.assertIn('-i', command)
             self.assertIn('--inside', command)
 
+    def test_core_password_offline_dispatch_without_ssh_key(self):
+        for filesystem in ('ext4', 'btrfs', 'xfs'):
+            args = self.args(filesystem)
+            args.ssh_key = None
+            args.passphrase_file = None
+            args.core_password_stdin = True
+            args.local = True
+            args.target_image = 'ghcr.io/rosti-cz/dcore:trixie'
+            payload = helper.password_tools.encode_credentials(b'core-test-password', b'luks-test-password')
+            with mock.patch.object(helper.sys, 'stdin', types.SimpleNamespace(buffer=io.BytesIO(payload))), \
+                 mock.patch.object(helper, 'run') as invoke:
+                helper.host_install(args)
+            command = invoke.call_args.args[0]
+            self.assertIn('--network=none', command)
+            self.assertIn('--core-password-stdin', command)
+            self.assertNotIn('--ssh-key', command)
+            self.assertEqual(command[command.index('--filesystem') + 1], filesystem)
+            self.assertEqual(invoke.call_args.kwargs['input'], payload)
+            self.assertNotIn('core-test-password', str(command))
+            self.assertNotIn('luks-test-password', str(command))
+
+    def test_malformed_credentials_never_launch_container(self):
+        args = self.args()
+        args.passphrase_file = None
+        args.core_password_stdin = True
+        with mock.patch.object(helper.sys, 'stdin', types.SimpleNamespace(buffer=io.BytesIO(b'bad-secret-json'))), \
+             mock.patch.object(helper, 'run') as invoke:
+            with self.assertRaises(ValueError) as raised:
+                helper.host_install(args)
+            self.assertNotIn('bad-secret', str(raised.exception))
+            invoke.assert_not_called()
+
     def test_growth_opt_out_forwarded(self):
         args = self.args()
         args.no_grow_root = True
@@ -140,6 +173,70 @@ class DispatchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'path changed'):
                 helper.host_install(args)
             invoke.assert_not_called()
+
+
+class InsideInstallTests(unittest.TestCase):
+    def execute(self, filesystem='ext4', payload=None, fail_password=False):
+        with tempfile.TemporaryDirectory() as work:
+            original_mkdtemp = tempfile.mkdtemp
+            calls = []
+            def execute(command, **kwargs):
+                calls.append((command, kwargs))
+                if command[:3] == ['bootc', 'install', 'mount']:
+                    (Path(command[-1]) / 'etc').mkdir()
+                if fail_password and command[0] == 'chpasswd':
+                    raise subprocess.CalledProcessError(1, command)
+                return types.SimpleNamespace(returncode=0)
+            def output(command, **kwargs):
+                return {'blockdev': str(10 * 1024**3), 'blkid': 'efi-test-uuid', 'cryptsetup': 'luks-test-uuid'}[command[0]]
+            args = argparse.Namespace(device='/dev/test', filesystem=filesystem, image='localhost/dcore:test',
+                ssh_key=None, core_password_stdin=True, local=True, no_grow_root=False,
+                target_image='ghcr.io/rosti-cz/dcore:trixie')
+            data = payload if payload is not None else helper.password_tools.encode_credentials(b'core-fixture', b'luks-fixture')
+            with mock.patch.object(helper.os, 'geteuid', return_value=0), \
+                 mock.patch.object(helper.Path, 'is_block_device', return_value=True), \
+                 mock.patch.object(helper, 'preflight'), \
+                 mock.patch.object(helper.shutil, 'which', side_effect=lambda name: name), \
+                 mock.patch.object(helper.subprocess, 'check_output', side_effect=output), \
+                 mock.patch.object(helper.subprocess, 'run', side_effect=execute), \
+                 mock.patch.object(helper.sys, 'stdin', types.SimpleNamespace(buffer=io.BytesIO(data))), \
+                 mock.patch.object(helper, 'partitions', return_value=('/dev/test2', '/dev/test3')), \
+                 mock.patch.object(helper.tempfile, 'mkdtemp', side_effect=lambda prefix, dir: original_mkdtemp(prefix=prefix, dir=work)):
+                error = None
+                try:
+                    helper.inside_install(args)
+                except (ValueError, subprocess.CalledProcessError) as raised:
+                    error = raised
+            return calls, error
+
+    def test_all_filesystems_provision_password_inside_encryption(self):
+        for filesystem in ('ext4', 'btrfs', 'xfs'):
+            with self.subTest(filesystem=filesystem):
+                calls, error = self.execute(filesystem)
+                self.assertIsNone(error)
+                commands = [command for command, _ in calls]
+                install = next(c for c in commands if c[:3] == ['bootc', 'install', 'to-filesystem'])
+                self.assertIn('--skip-fetch-check', install)
+                self.assertNotIn('--root-ssh-authorized-keys', install)
+                self.assertEqual('--allow-missing-verity' in install, filesystem == 'xfs')
+                self.assertTrue(any(c[0] == 'mkfs.' + filesystem for c in commands))
+                change, params = next(c for c in calls if c[0][0] == 'chpasswd')
+                self.assertEqual(params['input'], b'core:core-fixture\n')
+                self.assertTrue(any(c[:2] == ['cryptsetup', 'close'] for c in commands))
+                self.assertFalse(any('core-fixture' in str(c) or 'luks-fixture' in str(c) for c in commands))
+
+    def test_bad_payload_never_wipes(self):
+        calls, error = self.execute(payload=b'bad-secret-json')
+        self.assertIsInstance(error, ValueError)
+        self.assertFalse(any(c[0][0] == 'wipefs' for c in calls))
+        self.assertNotIn('bad-secret', str(error))
+
+    def test_password_failure_unmounts_and_closes_mapping(self):
+        calls, error = self.execute(fail_password=True)
+        self.assertIsInstance(error, subprocess.CalledProcessError)
+        commands = [command for command, _ in calls]
+        self.assertEqual(sum(c[0] == 'umount' for c in commands), 3)
+        self.assertEqual(commands[-1][:2], ['cryptsetup', 'close'])
 
 
 if __name__ == '__main__':

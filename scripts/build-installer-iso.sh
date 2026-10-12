@@ -31,7 +31,8 @@ path, source, tracking, local, release, debian = sys.argv[1:]
 with open(path, 'w') as output:
     json.dump(dict(source_image=source, tracking_image=tracking, local_image=local,
                    release=release, debian_release=debian, architecture='amd64',
-                   filesystem='ext4', encryption=False, secure_boot=False), output, indent=2)
+                   default_filesystem='ext4', filesystems=['ext4', 'btrfs', 'xfs'],
+                   encryption_modes=['none', 'luks2'], secure_boot=False), output, indent=2)
     output.write('\n')
 PY
 podman run --rm --privileged --security-opt label=disable \
