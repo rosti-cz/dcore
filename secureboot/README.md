@@ -17,6 +17,21 @@ October 9, 2036. Its SHA-256 fingerprint is:
 Reuse this key across releases so installed machines retain their trust. Key
 rotation requires distributing and enrolling the replacement certificate.
 
-Signing and enrollment support still need to be implemented. Adding this key
-does not enable Secure Boot in existing images; keep Secure Boot disabled until
-the complete boot chain and ZFS module signatures have been validated.
+Published image builds mount the key with Podman's `--secret` option and sign
+all DKMS modules before generating the initramfs. The private key is never
+copied into a container layer. Every module signature is cryptographically
+verified against this certificate as part of image verification.
+
+The ISO uses Debian's signed shim, GRUB and kernel. Installed dcore uses Debian's
+signed shim, systemd-boot and kernel, with both fallback and existing systemd
+entry paths routed through shim. Bootloader updates preserve these paths.
+
+Use **Enroll key** after installation or `djust enroll-secureboot` on the target
+machine. Choose a temporary enrollment password, reboot, and confirm in
+MokManager. Enrollment is needed for dcore's ZFS modules; Debian's boot chain
+can boot without it. The EFI partition also contains `EFI/dcore/dcore.der`.
+
+Local unsigned development builds explicitly set `SECUREBOOT_REQUIRED=0`.
+Release artifact builders reject images with unsigned dcore modules.
+The external initramfs, boot arguments and composefs root digest are not covered
+by a signed UKI; this implements Secure Boot compatibility, not a sealed system.

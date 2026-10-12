@@ -61,6 +61,9 @@ docker compose version
 fastfetch --version
 fastfetch --logo none --pipe true | grep -E '^OS: .*Debian.*\(dcore\)$'
 python3 -c 'import textual'
+/usr/libexec/dcore/verify-secureboot
+test -x /usr/libexec/dcore/bootctl.real
+test "$(readlink /usr/bin/bootctl)" = /usr/libexec/dcore/bootctl-shim
 locale -a | grep -qx 'en_US.utf8'
 locale -a | grep -qx 'cs_CZ.utf8'
 test -s /usr/share/zoneinfo/Europe/Prague

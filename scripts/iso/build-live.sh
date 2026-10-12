@@ -3,14 +3,27 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends live-build xorriso squashfs-tools \
-    grub-efi-amd64-bin grub-pc-bin dosfstools mtools isolinux syslinux-common
+apt-get install -y --no-install-recommends python3 live-build xorriso squashfs-tools \
+    grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub-pc-bin dosfstools mtools isolinux syslinux-common
+# live-build includes MokManager only in its shim-only branch. Add it to the
+# signed-GRUB branch before FAT sizing, for both optical and hybrid USB boots.
+python3 - <<'PYMOK'
+from pathlib import Path
+path = Path('/usr/lib/live/build/binary_grub-efi')
+script = path.read_text()
+marker = '${_CHROOT_DIR}/grub-efi-temp/EFI/boot/boot\\$efi_name.efi\n'
+addition = ('\t\tcp -a ${_CHROOT_DIR}/usr/lib/shim/mm\\$efi_name.efi.signed \\\n'
+            '\t\t\t${_CHROOT_DIR}/grub-efi-temp/EFI/boot/mm\\$efi_name.efi\n')
+if marker not in script:
+    raise SystemExit('Unsupported live-build EFI layout; refusing an ISO without MokManager.')
+path.write_text(script.replace(marker, marker + addition, 1))
+PYMOK
 cd /work
 lb config --mode debian --distribution "$DEBIAN_RELEASE" --architecture amd64 \
     --binary-image iso-hybrid --bootloaders grub-efi --debian-installer none \
     --chroot-squashfs-compression-type xz \
     --archive-areas 'main contrib non-free-firmware' --apt-recommends false \
-    --firmware-chroot false --uefi-secure-boot disable \
+    --firmware-chroot false --uefi-secure-boot enable \
     --bootappend-live 'boot=live components' --iso-volume DCORE_INSTALL
 mkdir -p config/package-lists config/includes.binary/dcore \
     config/includes.chroot/usr/libexec/dcore/install \
@@ -38,7 +51,12 @@ dmsetup
 udev
 iproute2
 ca-certificates
+mokutil
+openssl
 PACKAGES
+mkdir -p config/includes.chroot/usr/share/dcore/secureboot
+install -m 0644 /work/payload/dcore.der config/includes.chroot/usr/share/dcore/secureboot/dcore.der
+install -m 0755 /source/iso/enroll-secureboot config/includes.chroot/usr/libexec/dcore/enroll-secureboot
 # Use a dedicated RAM filesystem for Podman, avoiding nested overlay mounts
 # on the live root. No destination disk is used for image staging.
 cat > config/includes.chroot/etc/containers/storage.conf <<'STORAGE'
@@ -105,3 +123,7 @@ UNIT
 ln -s ../dcore-installer.service config/includes.chroot/etc/systemd/system/multi-user.target.wants/dcore-installer.service
 ln -s /dev/null config/includes.chroot/etc/systemd/system/getty@tty1.service
 lb build
+# Verify the bytes used by the optical El Torito image and hybrid USB ESP.
+mcopy -i binary/boot/grub/efi.img ::EFI/boot/mmx64.efi /work/mokmanager-check.efi
+cmp /usr/lib/shim/mmx64.efi.signed /work/mokmanager-check.efi
+rm /work/mokmanager-check.efi

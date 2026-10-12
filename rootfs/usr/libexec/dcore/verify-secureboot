@@ -1,0 +1,60 @@
+#!/usr/bin/python3
+"""Verify the signed EFI components and every release-signed DKMS module."""
+import json
+import lzma
+import platform
+from pathlib import Path
+import subprocess
+import tempfile
+
+
+def verify():
+    directory = Path('/usr/share/dcore/secureboot')
+    metadata = json.loads((directory / 'status.json').read_text())
+    certificate = directory / 'dcore.crt'
+    fingerprint = subprocess.check_output(['openssl', 'x509', '-in', str(certificate),
+        '-noout', '-fingerprint', '-sha256'], text=True).strip().split('=', 1)[1]
+    assert fingerprint == metadata['certificate_sha256'], 'Certificate fingerprint changed'
+    der = subprocess.check_output(['openssl', 'x509', '-in', str(certificate), '-outform', 'DER'])
+    assert der == (directory / 'dcore.der').read_bytes(), 'PEM and DER certificates differ'
+    kernels = list(Path('/usr/lib/modules').iterdir())
+    assert len(kernels) == 1
+    kernel = kernels[0]
+    suffix = {'x86_64': 'x64', 'aarch64': 'aa64'}[platform.machine()]
+    for binary in (Path(f'/usr/lib/shim/shim{suffix}.efi.signed'),
+                   Path(f'/usr/lib/shim/mm{suffix}.efi.signed'),
+                   Path(f'/usr/lib/systemd/boot/efi/systemd-boot{suffix}.efi.signed'), kernel / 'vmlinuz'):
+        result = subprocess.run(['sbverify', '--list', str(binary)], check=True, capture_output=True, text=True)
+        assert 'signature 1' in result.stdout, f'No EFI signature: {binary}'
+    if metadata['signed'] is not True:
+        print('Unsigned development build: dcore module key enrollment will not validate its DKMS modules.')
+        return
+    modules = [path for path in (kernel / 'updates/dkms').rglob('*') if path.is_file()
+               and path.name.endswith(('.ko', '.ko.xz', '.ko.zst'))]
+    assert metadata['modules'] == [str(p.relative_to(kernel)) for p in sorted(modules)], 'DKMS inventory changed'
+    assert modules, 'DKMS module inventory is empty'
+    for module in modules:
+        data = module.read_bytes()
+        if module.suffix == '.xz':
+            data = lzma.decompress(data)
+        elif module.suffix == '.zst':
+            data = subprocess.check_output(['zstd', '-d', '-c', str(module)])
+        magic = b'~Module signature appended~\n'
+        assert data.endswith(magic), f'Unsigned module: {module}'
+        end = len(data) - len(magic) - 12
+        trailer = data[end:end+12]
+        assert trailer[2] == 2 and trailer[3:5] == b'\0\0', 'Unexpected module signature format'
+        size = int.from_bytes(trailer[-4:], 'big')
+        assert 0 < size < end, 'Invalid module signature size'
+        with tempfile.TemporaryDirectory() as temporary:
+            content, signature = Path(temporary)/'module', Path(temporary)/'signature'
+            content.write_bytes(data[:end-size])
+            signature.write_bytes(data[end-size:end])
+            subprocess.run(['openssl', 'cms', '-verify', '-binary', '-inform', 'DER',
+                '-in', str(signature), '-content', str(content), '-certfile', str(certificate),
+                '-noverify', '-out', '/dev/null'], check=True, capture_output=True)
+    print(f'Verified signed Debian boot components and {len(modules)} dcore DKMS module signatures.')
+
+
+if __name__ == '__main__':
+    verify()

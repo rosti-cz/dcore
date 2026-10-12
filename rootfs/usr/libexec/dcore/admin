@@ -12,7 +12,7 @@ import subprocess
 import sys
 import types
 
-COMMANDS = ('change-luks-password', 'enroll-tpm', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus', 'switch-locale', 'set-timezone')
+COMMANDS = ('change-luks-password', 'enroll-tpm', 'enroll-secureboot', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus', 'switch-locale', 'set-timezone')
 INSTALLER = Path('/usr/libexec/dcore/install/block_install')
 # Preserve the original filename for existing host configurations.
 TIMER_DROPIN = Path('/etc/systemd/system/dcore-update.timer.d/20-ujust.conf')
@@ -98,6 +98,11 @@ def set_timezone():
     print(f'System timezone set to {selected}.')
 
 
+def enroll_secureboot():
+    tty()
+    run('/usr/libexec/dcore/enroll-secureboot', privileged=True)
+
+
 def booted_image():
     status = json.loads(run('bootc', 'status', '--format=json', capture=True, privileged=True).stdout)
     booted = status.get('status', {}).get('booted')
@@ -166,7 +171,7 @@ def enroll_tpm():
         raise ValueError('Keep a password or recovery slot before enrolling TPM automatic unlock.')
     print(f'Root LUKS2 device: {partition}')
     print('TPM unlock will be bound to PCR 7 (firmware Secure Boot policy).')
-    print('dcore currently requires Secure Boot disabled. This policy does not verify the boot image.')
+    print('PCR 7 binds to firmware policy; it does not authenticate the external initramfs or immutable root filesystem.')
     print('Keep your existing password for recovery after TPM or firmware changes.')
     if not approve('Replace the existing TPM enrollment?' if existing else 'Enroll TPM automatic unlocking?'):
         print('Cancelled; enrollment unchanged.')

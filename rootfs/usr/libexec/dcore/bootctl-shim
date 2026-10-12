@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+"""Keep bootctl's install/update paths behind Debian's signed shim."""
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+
+REAL_BOOTCTL = '/usr/libexec/dcore/bootctl.real'
+
+
+def option(arguments, name, default=None):
+    for index, argument in enumerate(arguments):
+        if argument.startswith(name + '='):
+            return argument.split('=', 1)[1]
+        if argument == name:
+            return arguments[index + 1]
+    return default
+
+
+def atomic_copy(source, destination):
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix='.dcore-', dir=destination.parent)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(source.read_bytes())
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, destination)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def boot_assets(root, architecture):
+    suffix = {'x86_64': 'x64', 'aarch64': 'aa64'}[architecture]
+    shim = root / f'usr/lib/shim/shim{suffix}.efi.signed'
+    manager = root / f'usr/lib/shim/mm{suffix}.efi.signed'
+    loader = root / f'usr/lib/systemd/boot/efi/systemd-boot{suffix}.efi.signed'
+    certificate = root / 'usr/share/dcore/secureboot/dcore.der'
+    for source in (shim, manager, loader, certificate):
+        if not source.is_file():
+            raise ValueError(f'Required signed boot component missing: {source}')
+    return suffix, shim, manager, loader, certificate
+
+
+def install_chain(root, esp, architecture):
+    suffix, shim, manager, loader, certificate = boot_assets(root, architecture)
+    for directory, entry in (('BOOT', f'BOOT{suffix.upper()}.EFI'),
+                             ('systemd', f'systemd-boot{suffix}.efi')):
+        target = esp / 'EFI' / directory
+        # Publish the trusted second stage before switching either entry to shim.
+        atomic_copy(loader, target / f'grub{suffix}.efi')
+        atomic_copy(manager, target / f'mm{suffix}.efi')
+        atomic_copy(shim, target / entry)
+    atomic_copy(certificate, esp / 'EFI/dcore/dcore.der')
+
+
+def main(arguments):
+    operation = next((arg for arg in arguments if arg in ('install', 'update')), None)
+    if operation is None or '--help' in arguments:
+        os.execv(REAL_BOOTCTL, [REAL_BOOTCTL, *arguments])
+    root = Path(option(arguments, '--root', '/'))
+    esp_option = option(arguments, '--esp-path', option(arguments, '-p'))
+    if esp_option is None:
+        query = subprocess.run([REAL_BOOTCTL, '--root', str(root), '--print-esp-path'],
+                               capture_output=True, text=True)
+        if query.returncode:
+            if '--graceful' in arguments:
+                return 0
+            raise ValueError('Cannot find the EFI System Partition.')
+        esp = Path(query.stdout.strip())
+    else:
+        esp = root / esp_option.lstrip('/')
+    architecture = platform.machine()
+    suffix, *_ = boot_assets(root, architecture)
+    owned = (esp / 'EFI/dcore/dcore.der').is_file() and (esp / f'EFI/BOOT/grub{suffix}.efi').is_file()
+    # Native bootctl would replace shim with a binary firmware does not trust.
+    # Existing dcore installations update the signed assets directly instead.
+    if not owned:
+        command = [REAL_BOOTCTL, *arguments]
+        if operation == 'update':
+            command[command.index('update')] = 'install'
+            command += ['--no-variables', '--random-seed=no']
+        subprocess.run(command, check=True)
+    options = subprocess.check_output(['findmnt', '--noheadings', '--output', 'OPTIONS', '--target', str(esp)], text=True).strip().split(',')
+    readonly = 'ro' in options
+    if readonly:
+        subprocess.run(['mount', '-o', 'remount,rw', str(esp)], check=True)
+    try:
+        install_chain(root, esp, architecture)
+    finally:
+        if readonly:
+            subprocess.run(['mount', '-o', 'remount,ro', str(esp)], check=True)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
+        print(f'dcore boot chain: {error}', file=sys.stderr)
+        sys.exit(1)

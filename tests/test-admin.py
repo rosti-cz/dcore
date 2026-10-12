@@ -233,6 +233,14 @@ class AdminTests(unittest.TestCase):
         which.assert_called_once_with('bootc',path='/usr/sbin:/usr/bin:/sbin:/bin')
         self.assertEqual(run.call_args.args[0],('/usr/bin/sudo','--','/usr/bin/bootc','upgrade'))
 
+    def test_secureboot_enrollment_elevates_only_fixed_interactive_helper(self):
+        with mock.patch.object(admin, 'run') as run:
+            admin.enroll_secureboot()
+        run.assert_called_once_with('/usr/libexec/dcore/enroll-secureboot', privileged=True)
+        with mock.patch.object(admin.sys.stdin, 'isatty', return_value=False), mock.patch.object(admin, 'run') as run:
+            with self.assertRaises(ValueError): admin.enroll_secureboot()
+            run.assert_not_called()
+
     def test_public_key_rejects_private_content(self):
         key = self.work/'key.pub'; key.write_text('-----BEGIN OPENSSH PRIVATE KEY-----\nfixture\n')
         with mock.patch.object(admin, 'run') as run:

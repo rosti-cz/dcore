@@ -1,0 +1,53 @@
+#!/usr/bin/python3
+"""Request MOK enrollment on this machine, with confirmation at the next boot."""
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+CERTIFICATE = Path('/usr/share/dcore/secureboot/dcore.der')
+
+
+def enroll():
+    if os.geteuid() != 0:
+        raise ValueError('Run djust enroll-secureboot as an ordinary user, or use sudo for this helper.')
+    if not sys.stdin.isatty():
+        raise ValueError('Certificate enrollment needs an interactive terminal.')
+    if not Path('/sys/firmware/efi/efivars').is_dir():
+        raise ValueError('Boot this machine in UEFI mode to enroll the certificate.')
+    if not CERTIFICATE.is_file():
+        raise ValueError('The dcore public certificate is missing.')
+    os.environ['PATH'] = '/usr/sbin:/usr/bin:/sbin:/bin'
+    environment = dict(os.environ, LC_ALL='C')
+    status = subprocess.run(['mokutil', '--test-key', str(CERTIFICATE)],
+                            capture_output=True, text=True, env=environment)
+    # Some Debian mokutil versions return zero for both enrolled and absent keys.
+    # Inspect its C-locale result instead of treating command success as trust.
+    response = status.stdout + status.stderr
+    if any(message in response for message in (' is already enrolled', ' is already in db',
+                                               ' is already in the built-in trusted keyring')):
+        print('The dcore certificate is already enrolled.')
+        return
+    if ' is already in the enrollment request' in response:
+        print('The dcore certificate has a pending request. Reboot and confirm it in MokManager.')
+        return
+    if status.returncode not in (0, 1) or ' is not enrolled' not in response:
+        raise ValueError('Cannot request enrollment: ' + (response.strip() or 'unknown firmware key status'))
+    subprocess.run(['openssl', 'x509', '-inform', 'DER', '-in', str(CERTIFICATE),
+                    '-noout', '-subject', '-fingerprint', '-sha256'], check=True)
+    print('Enroll this certificate on this machine to trust dcore-signed ZFS modules.')
+    print('Choose a temporary enrollment password at the next prompt. On reboot, select Enroll MOK,')
+    print('verify the certificate, and confirm with that password. This does not replace firmware keys.')
+    if input('Request enrollment on this machine? [y/N] ').strip().lower() not in ('y', 'yes'):
+        print('Cancelled; no enrollment requested.')
+        return
+    subprocess.run(['mokutil', '--import', str(CERTIFICATE)], check=True, env=environment)
+    print('Enrollment requested. Reboot and confirm it in MokManager before using ZFS with Secure Boot.')
+
+
+if __name__ == '__main__':
+    try:
+        enroll()
+    except (ValueError, OSError, subprocess.CalledProcessError, EOFError, KeyboardInterrupt) as error:
+        print(f'dcore certificate enrollment: {error}', file=sys.stderr)
+        sys.exit(1)

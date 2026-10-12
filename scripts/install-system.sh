@@ -36,6 +36,7 @@ apt-get update
 apt-get install -y --no-install-recommends \
     just tpm2-tools cryptsetup systemd-cryptsetup build-essential procps file distrobox uidmap slirp4netns fuse-overlayfs passt libpam-systemd dbus-user-session openvswitch-switch openvswitch-common btrfs-progs cloud-guest-utils gdisk python3 python3-textual bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
     "linux-image-${kernel_arch}" "linux-headers-${kernel_arch}" \
+    "systemd-boot-efi-${kernel_arch}-signed" shim-signed mokutil sbsigntool openssl \
     netplan.io libnss-resolve libnss-myhostname openssh-server skopeo wireguard \
     systemd systemd-sysv systemd-boot systemd-boot-efi systemd-resolved \
     systemd-timesyncd smartmontools xfsprogs libostree-1-1 ostree dracut kmod podman sudo \
@@ -56,4 +57,10 @@ install -d /usr/share/dcore
 dpkg-query -W -f='${binary:Package}\t${Version}\n' > /usr/share/dcore/packages.tsv
 apt-cache policy incus > /usr/share/dcore/incus-origin.txt
 apt-get clean
+# DKMS's temporary build key must not survive in any container layer.
+for directory in /var/lib/dkms /var/lib/shim-signed; do
+    if [[ -d $directory ]]; then
+        find "$directory" -type f \( -name '*.key' -o -name '*.priv' \) -delete
+    fi
+done
 rm -rf /var/lib/apt/lists/*

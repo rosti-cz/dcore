@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import types
+import subprocess
 import unittest
 from unittest import mock
 
@@ -182,6 +184,26 @@ class InterfaceTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 self.assertNotIsInstance(self.app.screen, EraseConfirmation)
                 self.assertEqual([call.args[0] for call in phase.call_args_list], ['configure', 'verify', 'cleanup'])
+
+
+    async def test_enrollment_failure_is_retryable_without_redeploying(self):
+        async with self.app.run_test() as pilot:
+            await pilot.pause()
+            button = self.app.query_one('#enroll-key', Button)
+            self.assertTrue(button.disabled)
+            completed = [phase for phase, _ in STEPS]
+            self.session.state['completed'] = completed.copy()
+            self.app.finished(True)
+            self.assertFalse(button.disabled)
+            with mock.patch.object(self.app, 'suspend', return_value=contextlib.nullcontext()), \
+                 mock.patch('interface.os.geteuid', return_value=1000), \
+                 mock.patch('interface.subprocess.run', return_value=subprocess.CompletedProcess([], 1)) as run, \
+                 mock.patch('builtins.input', return_value=''), mock.patch.object(self.session, 'run') as install:
+                self.app.on_button_pressed(types.SimpleNamespace(button=button))
+            run.assert_called_once_with(['/usr/bin/sudo', '--', '/usr/libexec/dcore/enroll-secureboot'])
+            install.assert_not_called()
+            self.assertEqual(self.session.state['completed'], completed)
+            self.assertIn('retry', str(self.app.query_one('#status', Static).render()))
 
 
 if __name__ == '__main__':

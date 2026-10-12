@@ -23,7 +23,7 @@ Erases the selected whole disk. Refuses partitions, mounted/swap/mapped/read-onl
 storage, containers, and devices replaced during installation preparation.
 Run on an amd64 Linux host with sudo/root, Podman, Python3, OpenSSH client,
 util-linux and systemd-detect-virt. The stock flow needs a public OCI image.
-Creates a portable UEFI disk (target Secure Boot disabled); no host reboot or
+Creates a portable UEFI disk with Debian's signed boot chain; no host reboot or
 firmware boot-entry changes. A destination of at least 10 GiB is recommended.
 HELP
 }
@@ -158,6 +158,6 @@ else
         --karg console=tty0
 fi
 sync
-printf '\nInstalled %s with %s on %s.\nBoot it in UEFI mode with Secure Boot disabled.\nThe current host has not been rebooted.\n' "$image" "$filesystem" "$device"
+printf '\nInstalled %s with %s on %s.\nBoot it in UEFI mode. Signed release images support Secure Boot.\nEnroll the dcore certificate before using ZFS with Secure Boot (djust enroll-secureboot).\nThe current host has not been rebooted.\n' "$image" "$filesystem" "$device"
 if [[ $core_password == true && $defer_account != true ]]; then echo 'Log in at the console or over SSH as core using the supplied password.'; fi
 if [[ -n $ssh_key ]]; then echo 'SSH as root or core using the matching private key.'; fi

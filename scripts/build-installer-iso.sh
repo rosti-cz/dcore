@@ -24,6 +24,9 @@ podman image exists "$source_image" || podman pull "$source_image"
 podman tag "$source_image" "$local_image"
 mkdir -p "$work_dir/payload"
 cp -r "$repo_dir/scripts" "$work_dir/source"
+cp "$repo_dir/rootfs/usr/libexec/dcore/enroll-secureboot" "$work_dir/source/iso/enroll-secureboot"
+podman run --rm "$local_image" cat /usr/share/dcore/secureboot/dcore.der > "$work_dir/payload/dcore.der"
+podman run --rm "$local_image" cat /usr/share/dcore/secureboot/status.json > "$work_dir/payload/secureboot-status.json"
 # Preserve the manifest digest so installed hosts can fetch this exact version later.
 podman save --format oci-archive --uncompressed "$local_image" | gzip -6 > "$work_dir/payload/image.oci.tar.gz"
 image_size=$(podman image inspect "$local_image" --format '{{.Size}}')
@@ -32,6 +35,8 @@ import json, sys, tarfile
 from pathlib import Path
 path, source, tracking, local, release, debian, image_size = sys.argv[1:]
 image_size = int(image_size)
+signing = json.loads(Path(path).with_name('secureboot-status.json').read_text())
+assert signing['signed'] is True, 'Release installer requires signed dcore modules'
 with tarfile.open(Path(path).with_name('image.oci.tar.gz'), mode='r|gz') as archive:
     for entry in archive:
         if entry.name.lstrip('./') == 'index.json':
@@ -48,7 +53,9 @@ with open(path, 'w') as output:
                    release=release, debian_release=debian, architecture='amd64',
                    image_size_bytes=image_size, minimum_ram_bytes=minimum_ram,
                    default_filesystem='ext4', filesystems=['ext4', 'btrfs', 'xfs'],
-                   encryption_modes=['none', 'luks2'], secure_boot=False), output, indent=2)
+                   encryption_modes=['none', 'luks2'], secure_boot=True,
+                   secure_boot_certificate_sha256=signing['certificate_sha256'],
+                   secure_boot_enrollment='MOK for ZFS modules'), output, indent=2)
     output.write('\n')
 PY
 podman run --rm --privileged --security-opt label=disable \

@@ -99,8 +99,8 @@ class InstallerApp(App):
     #status { color: $warning; margin-bottom: 1; }
     #step-list { margin-bottom: 1; }
     #output { height: 1fr; min-height: 3; border: solid #174a60; }
-    #progress-buttons { height: 3; margin-top: 1; }
-    #progress-buttons Button { margin-right: 1; min-width: 10; }
+    #progress-buttons, #boot-buttons { height: 3; margin-top: 1; }
+    #progress-buttons Button, #boot-buttons Button { margin-right: 1; min-width: 10; }
     '''
 
     def __init__(self, session=None):
@@ -131,7 +131,7 @@ class InstallerApp(App):
                 yield Button('Review installation', variant='primary', id='review')
                 yield Button('Rescan drives', id='rescan')
                 yield Button('Rescue shell', id='settings-shell')
-        with Container(id='progress'):
+        with VerticalScroll(id='progress'):
             yield Static('', id='summary', markup=False)
             yield Static('', id='step-list', markup=False)
             yield ProgressBar(total=len(STEPS), show_eta=False, id='bar')
@@ -142,6 +142,8 @@ class InstallerApp(App):
                 yield Button('Passwords', id='passwords')
                 yield Button('View logs', id='logs')
                 yield Button('Shell', id='shell')
+            with Horizontal(id='boot-buttons'):
+                yield Button('Enroll key', id='enroll-key', disabled=True)
                 yield Button('Reboot', variant='success', id='reboot', disabled=True)
 
         yield Footer()
@@ -265,6 +267,7 @@ class InstallerApp(App):
         for id in ('retry', 'passwords', 'logs', 'shell'):
             self.query_one('#' + id).disabled = self.busy
         self.query_one('#reboot').disabled = self.busy or len(state['completed']) != len(STEPS)
+        self.query_one('#enroll-key').disabled = self.busy or len(state['completed']) != len(STEPS)
 
     def finished(self, success):
         self.busy = False
@@ -273,7 +276,7 @@ class InstallerApp(App):
             message = ('Installation complete. Boot the selected drive using the target machine’s UEFI boot menu.'
                        if getattr(self.session, 'HOST_MODE', False) else
                        'Installation complete. Remove installer media before rebooting.')
-            self.query_one('#status', Static).update(message)
+            self.query_one('#status', Static).update(message + ' Secure Boot: use Enroll key to trust ZFS modules on this machine; confirm in MokManager on reboot.')
 
     def action_retry(self):
         if self.busy or self.query_one('#progress').display is False:
@@ -318,6 +321,22 @@ class InstallerApp(App):
             self.exit()
 
     def on_button_pressed(self, event: Button.Pressed):
+        if event.button.id == 'enroll-key' and not self.busy and len(self.session.state['completed']) == len(STEPS):
+            command = ['/usr/libexec/dcore/enroll-secureboot']
+            if os.geteuid() != 0:
+                command = ['/usr/bin/sudo', '--', *command]
+            with self.suspend():
+                try:
+                    succeeded = subprocess.run(command).returncode == 0
+                except (OSError, KeyboardInterrupt):
+                    succeeded = False
+                try:
+                    input('Press Enter to return to the installer…')
+                except (EOFError, KeyboardInterrupt):
+                    pass
+            self.query_one('#status', Static).update('Enrollment step finished; confirm any requested key on reboot.'
+                if succeeded else 'Enrollment failed. Use Enroll key to retry; the installed disk is preserved.')
+            return
         actions = {'review': self.review, 'rescan': self.rescan, 'retry': self.action_retry,
                    'passwords': self.password_screen, 'logs': self.action_logs,
                    'shell': self.shell, 'settings-shell': self.shell}

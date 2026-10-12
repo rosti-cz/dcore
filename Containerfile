@@ -27,11 +27,13 @@ ARG DEBIAN_RELEASE
 ARG INCUS_CHANNEL=stable
 ARG IMAGE_SOURCE=https://github.com/rosti-cz/dcore
 ARG IMAGE_REVISION=local
+ARG SECUREBOOT_REQUIRED=1
 LABEL containers.bootc="1" ostree.bootable="1" \
     org.opencontainers.image.title="dcore Debian bootc" \
     org.opencontainers.image.source="${IMAGE_SOURCE}" \
     org.opencontainers.image.revision="${IMAGE_REVISION}"
 COPY rootfs/ /
+COPY secureboot/dcore.crt secureboot/dcore.der /usr/share/dcore/secureboot/
 RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     --mount=type=bind,source=scripts/install-system.sh,target=/install-system.sh \
     --mount=type=bind,source=scripts/install-homebrew.sh,target=/install-homebrew.sh \
@@ -44,9 +46,11 @@ COPY --from=builder /output/ /
 RUN ldconfig
 RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     --mount=type=bind,source=scripts/configure-system.sh,target=/configure-system.sh \
+    --mount=type=bind,source=scripts/sign-secureboot.py,target=/sign-secureboot.py \
+    --mount=type=secret,id=secureboot_key \
     --mount=type=bind,source=shared/initramfs.sh,target=/initramfs.sh \
     --mount=type=bind,source=shared/dracut/94dcore-grow-root,target=/dcore-grow-dracut,ro \
-    /configure-system.sh && /initramfs.sh
+    /configure-system.sh && python3 /sign-secureboot.py --required "$SECUREBOOT_REQUIRED" && /initramfs.sh
 RUN --mount=type=bind,source=shared/bootc-rootfs.sh,target=/bootc-rootfs.sh \
     sed -i 's|^HOME=.*|HOME=/var/home|' /etc/default/useradd && \
     mkdir -p /usr/lib/opt /usr/lib/sysimage && \

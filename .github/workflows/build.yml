@@ -33,6 +33,7 @@ jobs:
           python3 tests/test-offline-installer.py
           python3 tests/test-grow-root-cmdline.py
           python3 tests/test-admin.py
+          python3 tests/test-secureboot.py
       - name: Test offline image RAM staging
         run: sudo python3 tests/test-image-staging.py
       - name: Test installer recovery and Textual interface
@@ -79,13 +80,22 @@ jobs:
       INCUS_CHANNEL: ${{ needs.configure.outputs.incus_channel }}
     steps:
       - uses: actions/checkout@v7
+      - name: Prepare Secure Boot signing secret
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          SECUREBOOT_SIGNING_KEY: ${{ secrets.SECUREBOOT_SIGNING_KEY }}
+        run: python3 scripts/prepare-secureboot-secret.py
       - name: Build and verify image
         env:
           REPOSITORY: ${{ github.repository }}
         run: |
           IMAGE="ghcr.io/${REPOSITORY,,}"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-          sudo podman build --pull=always --format=oci \
+          SIGNING_ARGS=(--build-arg SECUREBOOT_REQUIRED=0)
+          if [[ "$GITHUB_EVENT_NAME" != pull_request && "$GITHUB_REF" == "refs/heads/${{ github.event.repository.default_branch }}" ]]; then
+            SIGNING_ARGS=(--secret "id=secureboot_key,src=$RUNNER_TEMP/dcore-secureboot.key")
+          fi
+          sudo podman build --pull=always --squash --format=oci "${SIGNING_ARGS[@]}" \
             --build-arg "DEBIAN_RELEASE=$DEBIAN_RELEASE" \
             --build-arg "BOOTC_REF=$BOOTC_REF" \
             --build-arg "INCUS_CHANNEL=$INCUS_CHANNEL" \
@@ -93,6 +103,9 @@ jobs:
             --build-arg "IMAGE_REVISION=$GITHUB_SHA" \
             --tag "$IMAGE:$DEBIAN_RELEASE" --file Containerfile .
           sudo podman run --rm "$IMAGE:$DEBIAN_RELEASE" /usr/libexec/dcore/verify-image
+      - name: Remove signing secret from runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dcore-secureboot.key"
       - name: Test user, Homebrew and shell environment
         run: |
           sudo podman run --rm --network=none --security-opt label=disable \
@@ -103,6 +116,15 @@ jobs:
           sudo podman run --rm --network=none --security-opt label=disable \
             -v "$GITHUB_WORKSPACE/tests:/tests:ro" \
             "$IMAGE:$DEBIAN_RELEASE" /tests/test-djust-privileges.sh
+      - name: Test Secure Boot, encrypted installation and module enforcement
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf python3-virt-firmware
+          sudo modprobe loop
+          sudo modprobe btrfs
+          sudo modprobe dm_crypt
+          sudo python3 tests/test-secureboot-vm.py --image "$IMAGE:$DEBIAN_RELEASE" --filesystem btrfs --encrypt
       - name: Test root partition and filesystem growth
         run: |
           sudo modprobe loop

@@ -23,11 +23,19 @@ see [UPSTREAM.md](UPSTREAM.md) for attribution.
 
 **dcore is still a work in progress and is not running anywhere in our production yet.**
 
-**Secure Boot is not supported for now.** Disable it in the machine's UEFI
-firmware or VM configuration before booting dcore. The image does not configure
-a trusted Secure Boot chain or provide an enrollable dcore signing certificate
-for its build-time ZFS modules. Secure Boot signing and key enrollment are
-deferred.
+**Signed releases support UEFI Secure Boot.** The offline ISO uses Debian's
+signed shim, GRUB and kernel. Installed dcore uses Debian's signed shim,
+systemd-boot and kernel; its build-time ZFS modules are signed with the dcore
+key. Firmware must trust Microsoft's third-party UEFI CA, as for Debian.
+Use the installer's **Enroll key** button or `djust enroll-secureboot`, then
+reboot and confirm the certificate in MokManager before using ZFS. The public
+certificate is included in the image, ISO, EFI partition and release assets.
+See [Debian's Secure Boot documentation](https://wiki.debian.org/SecureBoot).
+
+This authenticates EFI binaries, the kernel and loadable modules. The external
+initramfs, boot arguments and composefs root digest are not signed as a sealed
+UKI; Secure Boot compatibility does not provide complete root filesystem
+attestation.
 
 It includes Debian ZFS (with a module compiled for the image kernel), Incus from
 [Zabbly's stable repository](https://github.com/zabbly/incus), Docker and Compose,
@@ -91,6 +99,7 @@ OS line through a system-wide default configuration.
 
 | Command | Behavior |
 | --- | --- |
+| `djust enroll-secureboot` | Request dcore certificate enrollment on this machine; choose a temporary password and confirm in MokManager on reboot. |
 | `djust enroll-tpm` | Enroll TPM2 automatic unlocking of the root LUKS2 partition, preserving password recovery. |
 | `djust change-luks-password` | Interactively change the root LUKS2 password; TPM enrollment remains intact. |
 | `djust upgrade` | Stage the OS update, then run Homebrew update and upgrade as core; reboot separately to apply the OS update. |
@@ -150,9 +159,10 @@ refuses firmware that leaves this PCR uninitialized. The image includes TPM
 libraries, drivers and initramfs support. Boot tries enrolled TPM tokens with password fallback.
 Enrollment uses PCR 7, which tracks firmware Secure Boot policy and permits
 ordinary kernel/image updates without binding to a particular kernel hash.
-**Secure Boot is currently disabled in dcore: this TPM policy does not verify
-the boot image.** Confirm this limitation before enrollment and retain the
-existing password for recovery if the TPM or firmware policy changes. Existing
+PCR 7 does not authenticate the external initramfs, boot arguments or composefs
+root digest. Enable Secure Boot and complete certificate enrollment before TPM
+enrollment, and retain the existing password for recovery if the TPM or firmware
+policy changes. Existing
 TPM enrollment is replaced only after approval; password/recovery slots are
 preserved. See [systemd's TPM policy documentation](https://www.freedesktop.org/software/systemd/man/systemd-cryptenroll.html).
 
@@ -269,12 +279,22 @@ and Debian package names and kernel/ZFS compatibility need validation.
 Local build (Podman/Buildah recommended, no cache to refresh latest releases):
 
 ```sh
-sudo podman build --pull=always --no-cache --format=oci \
+sudo podman build --pull=always --no-cache --squash --format=oci \
   --build-arg DEBIAN_RELEASE=trixie \
   --build-arg BOOTC_REF=v1.17.1 \
+  --build-arg SECUREBOOT_REQUIRED=0 \
   -t dcore:trixie -f Containerfile .
 sudo podman run --rm dcore:trixie /usr/libexec/dcore/verify-image
 ```
+
+The local example is an unsigned development build: its DKMS modules are not
+trusted by the dcore certificate. Published builds require
+`SECUREBOOT_SIGNING_KEY` in GitHub Actions and pass it only through a Podman
+secret mount. An authorized signed local build replaces
+`--build-arg SECUREBOOT_REQUIRED=0` with
+`--secret id=secureboot_key,src=/protected/path/dcore.key`; the key must match
+`secureboot/dcore.crt`. Never pass private keys as build arguments or copy them
+into the build context. Pull-request builds never receive the production key.
 
 bootc is pinned to v1.17.1. Trixie's libostree 2025.2 lacks composefs support
 and is too old for current bootc. `shared/build-ostree.sh` builds pinned
@@ -301,8 +321,8 @@ no network connection or registry login is required to install. The accompanying
 files are covered by the release's `SHA256SUMS`.
 
 Write the ISO to a USB drive using an image-writing tool, or attach it through
-your server's virtual CD/DVD interface. Boot in **UEFI mode with Secure Boot
-disabled**. Allow **16 GiB RAM** for the live environment and image staging, and
+your server's virtual CD/DVD interface. Boot in **UEFI mode**; signed release
+ISOs also support Secure Boot. Allow **16 GiB RAM** for the live environment and image staging, and
 select a system drive of at least **10 GiB**. Image staging uses RAM and never
 uses the destination disk as temporary storage. The installer checks RAM and
 free staging capacity before loading the image; the release manifest records
@@ -327,7 +347,7 @@ data. The EFI partition, kernel and initramfs remain unencrypted. Unlock the dis
 at the console on **every boot**, including automatic-update reboots; SSH becomes
 available after unlocking. The installer does not store an unlock key or enroll
 a TPM. After installation, optional TPM unlocking is available through
-`djust enroll-tpm`, subject to dcore's existing Secure Boot limitations.
+`djust enroll-tpm`. Complete Secure Boot certificate enrollment first if using it.
 
 After installation, remove/eject the ISO and reboot. Log in at the local console
 as `core` with your chosen password; core has passwordless sudo. The same password
@@ -391,11 +411,32 @@ offline ISO installation exercised XFS/LUKS2 and preserved a second test disk.
 Fish login with password SSH and Debian's Fastfetch package were also checked
 in disposable containers. Bare-metal boots remain unverified.
 
+Secure Boot validation boots the signed ISO and installed ext4 and encrypted
+Btrfs systems with OVMF's Microsoft certificates. Guests report Secure Boot
+enabled and kernel lockdown in integrity mode. ZFS is rejected before MOK
+enrollment, loads after enrollment, and a signature-stripped module is rejected.
+Bootloader updates preserve shim and the next boot succeeds. The signed ISO
+also includes the enrollment helper and the release certificate.
+
+To repeat the installed-system check on an amd64 host with Podman, QEMU, OVMF,
+SSH and `python3-virt-firmware` installed:
+
+```sh
+sudo podman pull ghcr.io/rosti-cz/dcore:trixie
+sudo python3 tests/test-secureboot-vm.py --image ghcr.io/rosti-cz/dcore:trixie \
+  --filesystem btrfs --encrypt
+```
+
+This creates a disposable disk under ignored `dist/`, uses test credentials,
+and simulates MOK enrollment in the VM's private firmware variable store.
+It runs in CI for signed main-branch builds before image publication.
+
 ## Testing options
 
 Use an amd64 test machine and wired DHCP networking. Incus and QEMU need an
-x86_64 VM with UEFI firmware and Secure Boot disabled; bare metal needs the same
-firmware configuration. These images use native composefs, systemd-boot and an
+x86_64 VM with UEFI firmware. Signed releases support Secure Boot; enroll the
+dcore certificate before using ZFS. Incus images keep Secure Boot disabled by
+default because MOK confirmation needs a console. These images use native composefs, systemd-boot and an
 ext4 root filesystem. The Incus guest agent supplies access inside Incus.
 Prebuilt disk images need your SSH public key provisioned before their first
 boot; they have no default administrator password. The offline ISO installer
@@ -513,8 +554,8 @@ The image's install configuration disables GPT-auto root discovery so bootc
 writes an explicit root filesystem UUID into boot parameters. This avoids the
 [upstream GPT-auto initrd mount issue](https://github.com/bootc-dev/bootc/issues/2184)
 and applies to both OCI installs and release disks.
-Secure Boot must remain disabled because dcore does not configure a trusted
-boot chain or trusted signatures for its ZFS modules.
+Signed releases support Secure Boot through Debian's signed boot chain.
+Enroll the dcore certificate to load its ZFS modules with Secure Boot enabled.
 The native backend is experimental. A local QEMU boot and SSH smoke test passed
 with the corrected image; the automated Incus install/import and guest-agent
 protocol have not yet been tested against an Incus daemon.
@@ -765,7 +806,7 @@ See [QEMU's drive and networking options](https://www.qemu.org/docs/master/syste
 
 ## Test on bare metal
 
-Use a spare amd64 machine/disk. Enable UEFI boot and disable Secure Boot in its
+Use a spare amd64 machine/disk. Enable UEFI boot in its
 firmware. The image does not provide a legacy BIOS bootloader, despite the
 placeholder GPT BIOS partition. Use Ethernet with DHCP for the first boot;
 wireless networking and additional non-free device firmware are not configured.
@@ -777,7 +818,8 @@ on another USB drive). The private key stays on your administration machine.
 From the cloned repository, `scripts/block_install` installs the current OCI
 image directly onto a USB drive, NVMe drive or SSD. Run it as root on an amd64
 Linux host or live Linux environment, outside containers. The host itself can
-be booted in BIOS mode; the resulting disk requires UEFI with Secure Boot off.
+be booted in BIOS mode; the resulting disk requires UEFI. Signed releases also
+support Secure Boot; enroll the dcore certificate before using ZFS.
 The script does not reboot the host or modify its firmware boot entries.
 
 On Debian/Ubuntu, install the host tools and identify the destination:
@@ -1272,8 +1314,9 @@ mounted filesystems. ZFS pool trimming is separate: opt in with
 
 ZFS is intended for data pools, including Incus storage. ZFS as the bootc root
 filesystem is not configured. The image builds and checks its ZFS module before
-publishing; trusted module signing and key enrollment are not configured, so
-Secure Boot must remain disabled.
+publishing. Release modules are signed with the dcore certificate; enroll it
+through `djust enroll-secureboot` and confirm in MokManager before using ZFS
+with Secure Boot enabled.
 Zabbly's `/opt/incus` payload is kept in `/usr/lib/opt/incus`, with `/opt` pointing
 to `/usr/lib/opt` so its original paths continue to work and update atomically.
 Use `/var/opt` for locally installed mutable software.

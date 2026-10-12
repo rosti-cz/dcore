@@ -215,7 +215,8 @@ class OfflineInstaller(unittest.TestCase):
         self.assertIn('--core-password-stdin', command)
         self.assertEqual(calls[1].kwargs['input'], b'test-password')
         self.assertNotIn('test-password', str(command))
-        self.assertEqual(len(calls), 2)  # No reboot unless explicitly requested.
+        self.assertEqual(calls[2], mock.call(['/usr/libexec/dcore/enroll-secureboot'], check=False))
+        self.assertEqual(len(calls), 3)  # No reboot unless explicitly requested.
 
     def test_all_filesystems_with_and_without_encryption(self):
         for filesystem in ('ext4', 'btrfs', 'xfs'):

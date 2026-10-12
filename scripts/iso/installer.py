@@ -114,7 +114,7 @@ def check_encryption_support():
 
 def install():
     if not Path('/sys/firmware/efi').is_dir():
-        raise ValueError('Boot the installer in UEFI mode with Secure Boot disabled.')
+        raise ValueError('Boot the installer in UEFI mode.')
     config = json.loads((MEDIUM / 'dcore/installer.json').read_text())
     check_resources(config, require_free=True)
     checker = module('block_check', INSTALL / 'lib/check-block-device.py')
@@ -180,6 +180,8 @@ def install():
     subprocess.run(command, input=payload, check=True)
     del payload
     print('\nInstallation complete. Remove the installer media before booting the new system.')
+    print('Secure Boot: enroll the dcore certificate on this machine before using ZFS.')
+    subprocess.run(['/usr/libexec/dcore/enroll-secureboot'], check=False)
     if input('Type REBOOT to reboot now, or Enter to stay here: ') == 'REBOOT':
         subprocess.run(['systemctl', 'reboot'], check=True)
 

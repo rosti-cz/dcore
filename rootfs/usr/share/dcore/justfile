@@ -8,6 +8,10 @@ default:
 enroll-tpm:
     @/usr/libexec/dcore/admin enroll-tpm
 
+# Request dcore certificate enrollment; confirm it in MokManager on reboot.
+enroll-secureboot:
+    @/usr/libexec/dcore/admin enroll-secureboot
+
 # Upgrade the OS and Homebrew; choose "homebrew" or "os" to retry one part.
 upgrade component="all":
     @/usr/libexec/dcore/admin upgrade --component {{quote(component)}}

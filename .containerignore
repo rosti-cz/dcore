@@ -13,3 +13,7 @@ dist/
 *.raw.xz
 
 __pycache__/
+secureboot/*.key
+secureboot/*.pem
+secureboot/*.p12
+secureboot/*.pfx

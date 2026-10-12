@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Preserve the packaged utility for read commands; install/update maintain shim.
+if [[ ! -f /usr/libexec/dcore/bootctl.real ]]; then
+    mv /usr/bin/bootctl /usr/libexec/dcore/bootctl.real
+fi
+ln -sfn /usr/libexec/dcore/bootctl-shim /usr/bin/bootctl
+systemctl enable systemd-boot-update.service
 # Both accounts already exist after the Homebrew build stage. Set the image's
 # login defaults as well as the sysusers definition used for core provisioning.
 usermod --shell /usr/bin/fish root

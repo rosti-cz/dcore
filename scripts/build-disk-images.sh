@@ -44,7 +44,7 @@ fi
 mkdir -p "$output_dir"
 output_dir=$(realpath "$output_dir")
 stem="dcore-${release_tag}-${debian_release}-amd64"
-for suffix in .raw.xz .qcow2 -incus.tar.xz -manifest.json -SHA256SUMS; do
+for suffix in .raw.xz .qcow2 -incus.tar.xz -manifest.json -SHA256SUMS -secureboot.crt -secureboot.der; do
     [[ ! -e "$output_dir/$stem$suffix" ]] || { echo "Refusing to overwrite $output_dir/$stem$suffix" >&2; exit 1; }
 done
 # Keep uncompressed raw disks temporary; publish only the compressed raw image.
@@ -52,6 +52,14 @@ work_dir=$(mktemp -d "$output_dir/.disk-build.XXXXXXXX")
 trap 'rm -rf -- "$work_dir"' EXIT
 truncate -s "$disk_size" "$work_dir/root.raw"
 podman pull "$source_image"
+podman run --rm "$source_image" cat /usr/share/dcore/secureboot/status.json > "$work_dir/secureboot.json"
+python3 - "$work_dir/secureboot.json" <<'PYSIGNING'
+import json, sys
+assert json.load(open(sys.argv[1]))['signed'] is True, 'Release disks require signed dcore modules'
+PYSIGNING
+for format in crt der; do
+    podman run --rm "$source_image" cat "/usr/share/dcore/secureboot/dcore.$format" > "$output_dir/$stem-secureboot.$format"
+done
 # This is a newly created regular file, never a host block device. bootc manages
 # its loop device and partitions; a separate mount namespace contains mounts.
 podman run --rm --privileged --pid=host --ipc=host \
@@ -81,7 +89,7 @@ path, version, release, created = sys.argv[1:]
 # JSON is a YAML subset; quoting prevents release names from changing structure.
 metadata = {'architecture': 'x86_64', 'creation_date': int(created), 'properties': {
     'os': 'Debian', 'release': release, 'variant': 'dcore', 'version': version,
-    'description': f'dcore {version} Debian {release} amd64 (UEFI, Secure Boot disabled)',
+    'description': f'dcore {version} Debian {release} amd64 (UEFI, Secure Boot compatible; enroll dcore key for ZFS)',
     'requirements.secureboot': 'false'}}
 with open(path, 'w') as output:
     json.dump(metadata, output, indent=2)
@@ -111,14 +119,15 @@ manifest = {'release': version, 'debian_release': release, 'architecture': 'amd6
             'disk_size': size, 'bootloader': 'systemd-boot', 'backend': 'composefs',
             'bootc_version': (work / 'bootc-version').read_text().strip(),
             'bootc_commit': (work / 'bootc-commit').read_text().strip(),
-            'secure_boot': False, 'root_ssh_key_configured': ssh_key == 'true', 'versions': versions, 'packages': packages}
+            'secure_boot': True, 'secure_boot_signing': json.loads((work / 'secureboot.json').read_text()),
+            'root_ssh_key_configured': ssh_key == 'true', 'versions': versions, 'packages': packages}
 with open(output, 'w') as stream:
     json.dump(manifest, stream, indent=2)
     stream.write('\n')
 PYMANIFEST
 (
     cd "$output_dir"
-    sha256sum "$stem.raw.xz" "$stem.qcow2" "$stem-incus.tar.xz" "$stem-manifest.json" > "$stem-SHA256SUMS"
+    sha256sum "$stem.raw.xz" "$stem.qcow2" "$stem-incus.tar.xz" "$stem-manifest.json" "$stem-secureboot.crt" "$stem-secureboot.der" > "$stem-SHA256SUMS"
 )
 # GitHub release assets must be smaller than 2 GiB each.
 for artifact in "$output_dir/$stem.raw.xz" "$output_dir/$stem.qcow2" "$output_dir/$stem-incus.tar.xz"; do

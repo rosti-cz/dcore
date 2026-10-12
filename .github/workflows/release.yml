@@ -72,6 +72,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y podman qemu-utils xz-utils
           sudo modprobe loop
+      - name: Prepare Secure Boot signing secret
+        env:
+          SECUREBOOT_SIGNING_KEY: ${{ secrets.SECUREBOOT_SIGNING_KEY }}
+        run: python3 scripts/prepare-secureboot-secret.py
       - name: Build and verify release OCI image
         run: |
           IMAGE="ghcr.io/${REPOSITORY,,}"
@@ -79,7 +83,8 @@ jobs:
           SOURCE_REVISION=$(git rev-parse HEAD)
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
           echo "VERSIONED_IMAGE=$VERSIONED_IMAGE" >> "$GITHUB_ENV"
-          sudo podman build --pull=always --format=oci \
+          sudo podman build --pull=always --squash --format=oci \
+            --secret "id=secureboot_key,src=$RUNNER_TEMP/dcore-secureboot.key" \
             --build-arg "DEBIAN_RELEASE=$DEBIAN_RELEASE" \
             --build-arg "BOOTC_REF=$BOOTC_REF" \
             --build-arg "INCUS_CHANNEL=$INCUS_CHANNEL" \
@@ -89,6 +94,9 @@ jobs:
           sudo podman run --rm "$VERSIONED_IMAGE" /usr/libexec/dcore/verify-image
           # Keep the tagged result, discard compiler layers before allocating disks.
           sudo podman image prune --force
+      - name: Remove signing secret from runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dcore-secureboot.key"
       - name: Publish versioned OCI image
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -116,7 +124,8 @@ jobs:
           STEM="dcore-$RELEASE_TAG-$DEBIAN_RELEASE-amd64"
           gh release upload "$RELEASE_TAG" --repo "$REPOSITORY" --clobber \
             "dist/$STEM.raw.xz" "dist/$STEM.qcow2" "dist/$STEM-incus.tar.xz" "dist/$STEM-manifest.json" \
-            "dist/$STEM-installer.iso" "dist/$STEM-installer-manifest.json"
+            "dist/$STEM-installer.iso" "dist/$STEM-installer-manifest.json" \
+            "dist/$STEM-secureboot.crt" "dist/$STEM-secureboot.der"
       - name: Share checksums for the release
         uses: actions/upload-artifact@v7
         with:
