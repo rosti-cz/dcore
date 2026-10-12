@@ -150,6 +150,34 @@ if args[0]=='pull':
             self.assertNotIn('core-fixture', str(calls) + result.stdout + result.stderr)
             self.assertNotIn('luks-fixture', str(calls) + result.stdout + result.stderr)
 
+    def test_staged_password_install_dispatch(self):
+        with tempfile.TemporaryDirectory(dir=self.work) as state:
+            for encrypted in (False, True):
+                self.log.write_text('')
+                args = [self.loop, '--local', '--image', 'localhost/dcore:release',
+                        '--core-password-stdin', '--defer-account', '--state-dir', state,
+                        '--confirm-device', self.loop]
+                payload = 'private-core-fixture'
+                if encrypted:
+                    args.append('--encrypt')
+                    payload = json.dumps({'version': 1, 'core_password': payload, 'luks_passphrase': 'private-disk-fixture'})
+                result = self.run_script('block_install', args, input=payload)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                install = next(call for call in self.calls() if call[:2] == ['podman', 'run'])
+                self.assertIn('--defer-account', install)
+                self.assertEqual(install[install.index('--state-dir') + 1], '/run/dcore-install-state')
+                self.assertIn(state + ':/run/dcore-install-state', install)
+                self.assertNotIn('private-core-fixture', str(self.calls()) + result.stdout + result.stderr)
+
+    def test_staged_install_rejects_public_checkpoint_directory(self):
+        with tempfile.TemporaryDirectory(dir=self.work) as state:
+            os.chmod(state, 0o755)
+            result = self.run_script('block_install', [self.loop, '--core-password-stdin',
+                '--defer-account', '--state-dir', state, '--confirm-device', self.loop], input='private-fixture')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('private and owned by root', result.stderr)
+            self.assertEqual(self.calls(), [])
+
     def test_ambiguous_encrypted_credentials_refused(self):
         result = self.run_script('block_install', [self.loop, '--encrypt', '--core-password-stdin',
             '--passphrase-file', str(self.key), '--confirm-device', self.loop], input='secret')

@@ -1,3 +1,7 @@
 #!/bin/sh
 # Always use the image's command runner and system Justfile.
+if [ "$(/usr/bin/id -u)" -eq 0 ]; then
+    echo 'Run djust directly as core or another ordinary user, without sudo.' >&2
+    exit 1
+fi
 exec /usr/bin/just --justfile /usr/share/dcore/justfile --working-directory /usr/share/dcore "$@"

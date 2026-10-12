@@ -24,13 +24,29 @@ podman image exists "$source_image" || podman pull "$source_image"
 podman tag "$source_image" "$local_image"
 mkdir -p "$work_dir/payload"
 cp -r "$repo_dir/scripts" "$work_dir/source"
-podman save --format oci-archive "$local_image" | gzip -6 > "$work_dir/payload/image.oci.tar.gz"
-python3 - "$work_dir/payload/installer.json" "$source_image" "$tracking_image" "$local_image" "$release_tag" "$debian_release" <<'PY'
-import json, sys
-path, source, tracking, local, release, debian = sys.argv[1:]
+# Preserve the manifest digest so installed hosts can fetch this exact version later.
+podman save --format oci-archive --uncompressed "$local_image" | gzip -6 > "$work_dir/payload/image.oci.tar.gz"
+image_size=$(podman image inspect "$local_image" --format '{{.Size}}')
+python3 - "$work_dir/payload/installer.json" "$source_image" "$tracking_image" "$local_image" "$release_tag" "$debian_release" "$image_size" <<'PY'
+import json, sys, tarfile
+from pathlib import Path
+path, source, tracking, local, release, debian, image_size = sys.argv[1:]
+image_size = int(image_size)
+with tarfile.open(Path(path).with_name('image.oci.tar.gz'), mode='r|gz') as archive:
+    for entry in archive:
+        if entry.name.lstrip('./') == 'index.json':
+            index = json.load(archive.extractfile(entry))
+            assert any(item['digest'] == source.split('@', 1)[1] for item in index['manifests']), 'OCI export changed the source image digest'
+            break
+    else:
+        raise ValueError('OCI archive index is missing')
+gib = 1024**3
+# Cover temporary archive extraction and image storage on the 75% RAM mount.
+minimum_ram = max(16 * gib, ((2 * image_size + gib) * 4 // 3 + gib + 4 * gib - 1) // (4 * gib) * (4 * gib))
 with open(path, 'w') as output:
     json.dump(dict(source_image=source, tracking_image=tracking, local_image=local,
                    release=release, debian_release=debian, architecture='amd64',
+                   image_size_bytes=image_size, minimum_ram_bytes=minimum_ram,
                    default_filesystem='ext4', filesystems=['ext4', 'btrfs', 'xfs'],
                    encryption_modes=['none', 'luks2'], secure_boot=False), output, indent=2)
     output.write('\n')

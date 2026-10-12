@@ -31,7 +31,7 @@ for unit in openvswitch-switch.service ovsdb-server.service ovs-vswitchd.service
     state=$(systemctl --root=/ is-enabled "$unit" 2>/dev/null || true)
     [[ $state == disabled || $state == static ]]
 done
-for tool in just djust tpm2 systemd-cryptenroll cryptsetup fish fastfetch htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs growpart sgdisk resize2fs xfs_growfs sfdisk partx findmnt unshare distrobox distrobox-create newuidmap newgidmap slirp4netns fuse-overlayfs pasta ovs-vsctl ovs-vswitchd brew bootc; do
+for tool in just djust tpm2 systemd-cryptenroll cryptsetup fish fastfetch smartctl smartd htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs growpart sgdisk resize2fs xfs_growfs sfdisk partx findmnt unshare distrobox distrobox-create newuidmap newgidmap slirp4netns fuse-overlayfs pasta ovs-vsctl ovs-vswitchd brew bootc; do
     command -v "$tool" > /dev/null
 done
 test -x /usr/libexec/incus/incus-agent
@@ -43,7 +43,7 @@ for unit in incus.socket incus-startup.service incus-lxcfs.service; do
     [[ $(systemctl --root=/ is-enabled "$unit" 2>/dev/null || true) == disabled ]]
 done
 just --justfile /usr/share/dcore/justfile --list
-for tool in admin install/block_install install/lib/check-block-device.py install/lib/install-encrypted.py; do
+for tool in admin admin-privileged install/block_install install/lib/check-block-device.py install/lib/install-encrypted.py install/lib/finish-install.py installer/installer.py installer/interface.py installer/session.py installer/host-backend.py; do
     test -f "/usr/libexec/dcore/$tool"
 done
 test -x /usr/libexec/dcore/grow-root
@@ -59,6 +59,8 @@ LD_LIBRARY_PATH=/opt/incus/lib /opt/incus/bin/incusd --version
 LD_LIBRARY_PATH=/opt/incus/lib "/opt/incus/bin/qemu-system-$(uname -m)" --version
 docker compose version
 fastfetch --version
+fastfetch --logo none --pipe true | grep -E '^OS: .*Debian.*\(dcore\)$'
+python3 -c 'import textual'
 
 distrobox --version
 ovs-vsctl --version

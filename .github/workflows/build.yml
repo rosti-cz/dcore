@@ -33,6 +33,16 @@ jobs:
           python3 tests/test-offline-installer.py
           python3 tests/test-grow-root-cmdline.py
           python3 tests/test-admin.py
+      - name: Test offline image RAM staging
+        run: sudo python3 tests/test-image-staging.py
+      - name: Test installer recovery and Textual interface
+        run: |
+          python3 tests/test-host-installer.py
+          python3 tests/test-installer-session.py
+          python3 tests/test-finish-install.py
+          python3 -m venv /tmp/dcore-textual-tests
+          /tmp/dcore-textual-tests/bin/pip install 'textual==2.1.2'
+          /tmp/dcore-textual-tests/bin/python tests/test-installer-interface.py
       - id: config
         name: Read Debian release configuration
         run: |
@@ -88,6 +98,11 @@ jobs:
           sudo podman run --rm --network=none --security-opt label=disable \
             -v "$GITHUB_WORKSPACE/tests:/tests:ro" \
             "$IMAGE:$DEBIAN_RELEASE" /tests/test-user-environment.sh
+      - name: Test djust privilege boundaries
+        run: |
+          sudo podman run --rm --network=none --security-opt label=disable \
+            -v "$GITHUB_WORKSPACE/tests:/tests:ro" \
+            "$IMAGE:$DEBIAN_RELEASE" /tests/test-djust-privileges.sh
       - name: Test root partition and filesystem growth
         run: |
           sudo modprobe loop

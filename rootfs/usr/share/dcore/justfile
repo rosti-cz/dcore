@@ -8,13 +8,13 @@ default:
 enroll-tpm:
     @/usr/libexec/dcore/admin enroll-tpm
 
-# Stage the newest tracked bootc image; reboot separately to apply it.
-upgrade:
-    @/usr/libexec/dcore/admin upgrade
+# Upgrade the OS and Homebrew; choose "homebrew" or "os" to retry one part.
+upgrade component="all":
+    @/usr/libexec/dcore/admin upgrade --component {{quote(component)}}
 
-# Install dcore onto a selected unused whole disk.
-install:
-    @/usr/libexec/dcore/admin install
+# Install dcore onto an unused disk with the shared wizard; 'plain' uses key-based prompts.
+install interface="tui":
+    @/usr/libexec/dcore/admin install --interface {{quote(interface)}}
 
 # Generate an Ed25519 SSH key for core, preserving an existing key.
 gen-sshkey:

@@ -38,6 +38,7 @@ RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     /install-system.sh && /install-homebrew.sh
 COPY scripts/block_install /usr/libexec/dcore/install/block_install
 COPY scripts/lib/ /usr/libexec/dcore/install/lib/
+COPY scripts/iso/*.py /usr/libexec/dcore/installer/
 # Install the source-built boot stack after APT so Debian packages cannot overwrite it.
 COPY --from=builder /output/ /
 RUN ldconfig

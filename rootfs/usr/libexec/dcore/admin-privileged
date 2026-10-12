@@ -1,0 +1,82 @@
+#!/usr/bin/python3
+"""Small, fixed-path root operations used by the ordinary-user djust frontend."""
+import argparse
+import importlib.machinery
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import sys
+import subprocess
+import tempfile
+import types
+
+
+def load(path, name):
+    result = types.ModuleType(name)
+    importlib.machinery.SourceFileLoader(name, str(path)).exec_module(result)
+    return result
+
+
+def write_timer(path, calendar):
+    if not re.fullmatch(r'(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) \*-\*-\* (?:[01][0-9]|2[0-3]):[0-5][0-9]:00', calendar):
+        raise ValueError('Invalid maintenance calendar.')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix='.20-djust-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as output:
+            output.write(f'[Timer]\nOnCalendar=\nOnCalendar={calendar}\nRandomizedDelaySec=0\n')
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('operation', choices=('root-luks', 'check-disk', 'list-keys',
+                                            'core-key-status', 'prepare-core-ssh', 'write-timer'))
+    parser.add_argument('value', nargs='?')
+    args = parser.parse_args()
+    if os.geteuid() != 0:
+        parser.error('This helper must be called through sudo.')
+    os.environ['PATH'] = '/usr/sbin:/usr/bin:/sbin:/bin'
+    admin = load(Path(__file__).with_name('admin'), 'dcore_admin')
+    if args.operation == 'root-luks':
+        print(json.dumps(admin.detect_root_luks()))
+    elif args.operation == 'check-disk':
+        if not args.value:
+            parser.error('A device is required.')
+        checker = admin.load_module(admin.INSTALLER.parent / 'lib/check-block-device.py', 'block_check')
+        print(json.dumps(checker.check(args.value)))
+    elif args.operation == 'list-keys':
+        if args.value not in ('root', 'core'):
+            parser.error('Choose root or core.')
+        directory = admin.ROOT_SSH if args.value == 'root' else admin.CORE_SSH
+        if directory.is_symlink():
+            raise ValueError('Refusing a symlinked SSH directory.')
+        candidates = sorted({*directory.glob('*.pub'), directory / 'authorized_keys'})
+        print(json.dumps([str(path) for path in candidates if admin.public_key(path)]))
+    elif args.operation == 'core-key-status':
+        print(json.dumps({'exists': os.path.lexists(admin.CORE_SSH / 'id_ed25519')}))
+    elif args.operation == 'prepare-core-ssh':
+        account = pwd.getpwnam('core')
+        if admin.CORE_SSH.is_symlink():
+            raise ValueError('Refusing a symlinked core SSH directory.')
+        admin.CORE_SSH.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chown(admin.CORE_SSH, account.pw_uid, account.pw_gid)
+        admin.CORE_SSH.chmod(0o700)
+    else:
+        if not args.value:
+            parser.error('A calendar is required.')
+        write_timer(admin.TIMER_DROPIN, args.value)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        print(f'djust privileged operation: {error}', file=sys.stderr)
+        sys.exit(1)

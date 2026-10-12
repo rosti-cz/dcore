@@ -3,6 +3,8 @@
 import importlib.util
 import io
 import json
+import os
+import types
 import shutil
 from pathlib import Path
 import subprocess
@@ -24,6 +26,64 @@ def load(name, path):
 
 password = load('password', ROOT / 'scripts/lib/install-password.py')
 installer = load('iso_installer', ROOT / 'scripts/iso/installer.py')
+
+
+class ResourceChecks(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.staging = self.root / 'staging'
+        self.staging.mkdir()
+        self.memory = self.root / 'meminfo'
+        self.set_memory(16, 14)
+        self.config = {'minimum_ram_bytes': 16 * installer.GIB, 'image_size_bytes': 4 * installer.GIB}
+        self.environment = mock.patch.dict(os.environ)
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def set_memory(self, total, available):
+        self.memory.write_text(f'MemTotal: {int(total * 1024**2)} kB\nMemAvailable: {int(available * 1024**2)} kB\n')
+
+    def check(self, free=True):
+        installer.check_resources(self.config, require_free=free, staging=self.staging, meminfo=self.memory)
+
+    def test_800_mib_refused_before_any_staging_operations(self):
+        self.set_memory(0.8, 0.5)
+        with mock.patch.object(installer.subprocess, 'check_output') as command:
+            with self.assertRaisesRegex(ValueError, '16 GiB RAM; detected 0.8 GiB'):
+                self.check()
+            command.assert_not_called()
+        self.assertFalse((self.staging / 'image-tmp').exists())
+
+    def test_temporary_images_use_same_ram_storage_as_graphroot(self):
+        with mock.patch.object(installer.subprocess, 'check_output', return_value='tmpfs\n'), \
+             mock.patch.object(installer.os, 'statvfs', return_value=types.SimpleNamespace(f_bavail=12, f_frsize=installer.GIB)):
+            self.check()
+        temporary = self.staging / 'image-tmp'
+        self.assertEqual(os.environ['TMPDIR'], str(temporary))
+        self.assertEqual(temporary.stat().st_mode & 0o777, 0o700)
+
+    def test_kernel_memory_reservations_allow_nominal_16_gib_vm(self):
+        self.set_memory(15.6, 14)
+        with mock.patch.object(installer.subprocess, 'check_output', return_value='tmpfs\n'):
+            self.check(free=False)
+
+    def test_overlay_staging_is_refused(self):
+        with mock.patch.object(installer.subprocess, 'check_output', return_value='overlay\n'):
+            with self.assertRaisesRegex(ValueError, 'dedicated RAM filesystem'):
+                self.check()
+
+    def test_full_staging_or_low_free_memory_is_reported_before_import(self):
+        with mock.patch.object(installer.subprocess, 'check_output', return_value='tmpfs\n'), \
+             mock.patch.object(installer.os, 'statvfs', return_value=types.SimpleNamespace(f_bavail=2, f_frsize=installer.GIB)):
+            with self.assertRaisesRegex(ValueError, 'free RAM staging space'):
+                self.check()
+        self.set_memory(16, 2)
+        with mock.patch.object(installer.subprocess, 'check_output', return_value='tmpfs\n'), \
+             mock.patch.object(installer.os, 'statvfs', return_value=types.SimpleNamespace(f_bavail=12, f_frsize=installer.GIB)):
+            with self.assertRaisesRegex(ValueError, 'available RAM 2.0 GiB'):
+                self.check()
 
 
 class OfflineInstaller(unittest.TestCase):
@@ -134,6 +194,7 @@ class OfflineInstaller(unittest.TestCase):
                  mock.patch.object(installer, 'media_devices', return_value={'/dev/media'}), \
                  mock.patch.object(installer, 'eligible_disks', return_value=[(disk, {'diskseq': 1})]), \
                  mock.patch.object(installer, 'check_encryption_support'), \
+                 mock.patch.object(installer, 'check_resources'), \
                  mock.patch.object(installer.getpass, 'getpass',
                      side_effect=passwords or (['test-password'] * 2 + (['test-disk-passphrase'] * 2 if encrypt else []))), \
                  mock.patch('builtins.input', side_effect=['1', fs_choice if fs_choice is not None else str(('ext4', 'btrfs', 'xfs').index(filesystem) + 1),

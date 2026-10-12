@@ -30,6 +30,7 @@ live-config-systemd
 systemd-sysv
 podman
 python3
+python3-textual
 openssh-client
 util-linux
 kmod
@@ -49,11 +50,22 @@ STORAGE
 cat > config/includes.chroot/etc/containers/containers.conf <<'ENGINE'
 [engine]
 cgroup_manager = "cgroupfs"
+image_copy_tmp_dir = "/var/lib/containers/image-tmp"
 ENGINE
 cp /work/payload/* config/includes.binary/dcore/
 cp /source/block_install config/includes.chroot/usr/libexec/dcore/install/
 cp -r /source/lib config/includes.chroot/usr/libexec/dcore/install/
-install -m 0755 /source/iso/installer.py config/includes.chroot/usr/libexec/dcore/iso-installer
+mkdir -p config/includes.chroot/usr/libexec/dcore/installer
+install -m 0755 /source/iso/installer.py /source/iso/session.py /source/iso/interface.py \
+    config/includes.chroot/usr/libexec/dcore/installer/
+cat > config/includes.chroot/usr/libexec/dcore/iso-installer <<'LAUNCHER'
+#!/bin/sh
+set -eu
+install -d -m 0700 /var/lib/containers/image-tmp
+export TMPDIR=/var/lib/containers/image-tmp
+exec /usr/bin/python3 /usr/libexec/dcore/installer/installer.py "$@"
+LAUNCHER
+chmod 0755 config/includes.chroot/usr/libexec/dcore/iso-installer
 cat > config/includes.chroot/etc/systemd/system/var-lib-containers.mount <<'UNIT'
 [Unit]
 Description=RAM storage for the offline installation image
@@ -73,7 +85,9 @@ Conflicts=getty@tty1.service
 ConditionPathExists=/run/live/medium/dcore/installer.json
 
 [Service]
+# Keep kernel informational messages from overwriting the terminal interface.
 Type=simple
+ExecStartPre=-/usr/bin/dmesg --console-level 3
 ExecStart=/usr/libexec/dcore/iso-installer
 StandardInput=tty-force
 StandardOutput=tty

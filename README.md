@@ -1,6 +1,26 @@
 # dcore
 
-Debian Trixie bootc server image derived from [bootcrew/mono](https://github.com/bootcrew/mono/blob/main/debian/Containerfile).
+![dcore boat](dcore-boat.png)
+
+dcore brings immutability into the Debian ecosystem. It is built from the
+[official Debian Docker image](https://hub.docker.com/_/debian) and prepares
+Debian Trixie as an immutable bootc operating system for hosting virtual machines
+and containers.
+
+**This is still Debian, prepared for server use.** The project focuses on
+packaging and configuring Debian in an immutable form. Its Debian packages come
+from Debian repositories and use [Debian's security update infrastructure](https://www.debian.org/security/),
+with updates delivered through rebuilt system images and bootc upgrades.
+
+Another goal is seamless integration of the latest stable Incus into the
+immutable system image. Incus comes from Zabbly's stable repository and is
+updated alongside the operating system through image builds and upgrades.
+
+The image-based operating model is inspired by Universal Blue's
+[uCore](https://github.com/ublue-os/ucore). The build implementation starts from
+[bootcrew/mono](https://github.com/bootcrew/mono/blob/main/debian/Containerfile);
+see [UPSTREAM.md](UPSTREAM.md) for attribution.
+
 **dcore is still a work in progress and is not running anywhere in our production yet.**
 
 **Secure Boot is not supported for now.** Disable it in the machine's UEFI
@@ -53,7 +73,7 @@ Release downloads are checked against upstream SHA-256 checksums.
   `openvswitch-common`).
 - System: bootc, OSTree, sudo, OpenSSH server, netplan, systemd-resolved,
   systemd-timesyncd (enabled), fstrim timer (enabled).
-- Storage: Debian ZFS (`zfsutils-linux`, `zfs-zed`, `zfs-dracut`, and
+- Storage: SMART diagnostics and monitoring (`smartmontools`, `smartctl`, `smartd`), Debian ZFS (`zfsutils-linux`, `zfs-zed`, `zfs-dracut`, and
   `zfs-dkms` compiled for the image kernel), parted, `btrfs-progs` (`btrfs`), ext4, XFS and FAT utilities, cryptsetup and systemd-cryptsetup.
 
 The full package/version inventory is `/usr/share/dcore/packages.tsv` inside
@@ -62,20 +82,40 @@ an image.
 
 The image includes Debian's `just` command runner and a system Justfile at
 `/usr/share/dcore/justfile`. Run `djust` to list commands from any directory.
+Invoke it directly as `core` or another ordinary user; root and `sudo djust` are rejected. Individual system
+operations use sudo, while Homebrew runs as its owner, `core`.
 Privileged commands request sudo automatically; core has passwordless sudo.
+New installations default to hostname `dcore`. Set a different name with
+`sudo hostnamectl set-hostname NAME`. Fastfetch appends `(dcore)` to its Debian
+OS line through a system-wide default configuration.
 
 | Command | Behavior |
 | --- | --- |
 | `djust enroll-tpm` | Enroll TPM2 automatic unlocking of the root LUKS2 partition, preserving password recovery. |
 | `djust change-luks-password` | Interactively change the root LUKS2 password; TPM enrollment remains intact. |
-| `djust upgrade` | Run `bootc upgrade` to stage an image update; reboot separately to apply it. |
-| `djust install` | Select an unused whole drive, SSH public keys, filesystem and encryption, then confirm erasure and install the current image reference. |
+| `djust upgrade` | Stage the OS update, then run Homebrew update and upgrade as core; reboot separately to apply the OS update. |
+| `djust upgrade os` / `djust upgrade homebrew` | Update only the selected component, for example after a failed upgrade. |
+| `djust install` | Open the shared installer wizard; choose an unused drive, filesystem, encryption and core password, then install the exact booted image version. |
+| `djust install plain` | Use the original SSH public-key prompts for installation. |
 | `djust gen-sshkey` | Generate `/var/home/core/.ssh/id_ed25519` as core, or report an existing key without replacing it. |
 | `djust enable-autoupgrade` | Choose a weekly day/time in the system's local timezone and explicitly approve automatic upgrades and reboots. |
-| `djust enable-incus` | Enable the Incus server, or offer to disable it when already enabled/running. |
+| `djust enable-incus` | Enable the Incus server and add core to incus-admin, or offer to disable it when already enabled/running. |
 
-Installation reuses the block installer's disk identity and busy-device checks.
-Only validated public keys or `authorized_keys` from `/root/.ssh` or
+The same Textual installer is included in both dcore and the offline ISO.
+`djust install` runs its interface as the ordinary caller and elevates individual
+backend operations through sudo. It excludes the running system's mounted,
+swap and mapped disks and requires an exact `ERASE /dev/DEVICE` confirmation.
+It reuses a cached OCI image with the booted digest, or downloads that exact
+version, and preserves the image reference for updates on the new installation.
+Host staging uses `/var/lib/containers` on the existing host filesystem;
+the ISO's 16 GiB RAM requirement applies to live RAM staging. Allow at least
+10 GiB free host storage when downloading an uncached image. Retries preserve
+completed deployment and credentials stay in memory. Host mode never offers
+an automatic reboot of the current server. The wizard's rescue shell runs as
+the caller; use sudo there if administration is needed.
+
+The `djust install plain` fallback reuses the block installer's disk identity
+and busy-device checks. Only validated public keys or `authorized_keys` from `/root/.ssh` or
 `/var/home/core/.ssh` are offered; private keys are never copied. The final
 installer requires typing `ERASE` followed by the destination path. An SSH
 public key is required for access to the installed server.
@@ -256,9 +296,15 @@ Write the ISO to a USB drive using an image-writing tool, or attach it through
 your server's virtual CD/DVD interface. Boot in **UEFI mode with Secure Boot
 disabled**. Allow **16 GiB RAM** for the live environment and image staging, and
 select a system drive of at least **10 GiB**. Image staging uses RAM and never
-uses the destination disk as temporary storage.
+uses the destination disk as temporary storage. The installer checks RAM and
+free staging capacity before loading the image; the release manifest records
+its minimum RAM requirement. Podman temporary image files share the dedicated
+RAM filesystem with its image store, instead of filling the live `/var/tmp`
+overlay. An approximately 800 MiB VM cannot stage this image.
 
-The console installer lists eligible whole drives with size, model and serial.
+The Python Textual interface lists eligible whole drives with size, model and serial.
+Use the keyboard or mouse to select options, review the installation, inspect
+logs, retry a failed step, or open a rescue shell.
 Select **ext4** (default), **Btrfs**, or **XFS**, then choose an unencrypted root
 (default) or **LUKS2 encryption**. All three filesystems support both modes.
 Enter the `core` password twice with input hidden; encrypted installations also
@@ -284,10 +330,24 @@ and ownership `core:core`. No default password or SSH key is baked into the ISO.
 The installed system tracks `ghcr.io/rosti-cz/dcore:trixie` for later updates,
 while automatic updates remain disabled until enabled by the administrator.
 
-Cancellation and installation errors return to the installer; type `SHELL` at
-the restart prompt for a root rescue shell. A failed installation may leave the
-chosen disk incomplete. The installer only offers reboot after both disk
-installation and password provisioning succeed.
+The progress screen tracks image loading, destination checks, OS deployment,
+account configuration, verification and cleanup. **Retry step** keeps completed
+stages: a failed password setup, verification or cleanup does not erase the OS
+again. Failure during OS deployment can leave an incomplete disk and requires a
+fresh erase confirmation before reinstalling. Upgrade commands similarly offer
+to retry only their failed substep in an interactive terminal.
+
+Checkpoints and logs live in the private `/run/dcore-installer` directory for the
+current live boot. Restarting the interface restores progress and asks for the
+passwords again; passwords are held in memory and are never saved in checkpoints
+or logs. A reboot of the live environment loses these checkpoints. Reboot is
+available after all installation stages succeed. **Rescue shell** is available
+while no installation operation is running.
+
+For terminals that cannot run Textual, invoke
+`/usr/libexec/dcore/iso-installer --plain` from a live rescue shell. This fallback
+uses the original prompts and does not provide the progress screen's recovery
+controls.
 
 To build an ISO locally, use an amd64 Linux host with root, Podman, gzip and
 Python3. The build needs network access for the Debian live environment, even
@@ -1018,6 +1078,32 @@ changes preserving the TPM token, and recovery with the new password after
 clearing the TPM. The simulated measurement exists only in the test fixture;
 physical TPM/firmware behavior remains unverified.
 
+Textual installer validation passed the recovery and headless interface tests
+with Textual 2.1.2. Disposable ext4 and encrypted XFS disks survived an injected
+account-setup failure and retry, then booted with password SSH access, sudo,
+Fish and Fastfetch. An offline ISO installed encrypted Btrfs in a UEFI VM with
+outbound networking disabled. After an injected account-setup failure, restarting
+the interface restored its checkpoints and required re-entering credentials;
+completion preserved the root filesystem UUID and deployed the OS only once.
+The resulting disk booted without the ISO. Checkpoints and logs contained no
+passwords. These validation images reused a cached bootc base with current
+configuration and installer files; bare-metal testing remains outstanding.
+
+Host installer validation booted a 3 GiB RAM dcore VM with a separate unused
+10 GiB disk. The ordinary-user session excluded its mounted system disk and
+installed the exact cached booted image onto an encrypted Btrfs target. An
+injected unlock failure during account setup was retried without a second OS
+deployment. The target booted independently with password SSH access, sudo,
+hostname `dcore`, Fish, the branded Fastfetch OS line and SMART tools. Enabling
+Incus added core to incus-admin and a new login used the Incus API without sudo.
+OCI archive regression checks also verify preservation of the source digest.
+
+Ordinary-user djust execution, root rejection, OS sudo elevation and Homebrew
+execution as core were tested in disposable containers. Upgrade ordering and
+failed-step retry used command fixtures; a live Homebrew package upgrade was
+not performed. CI is configured to run the recovery, interface and privilege
+regression tests.
+
 ## Automatic root disk growth
 
 New release disks and the Incus installer default to **10 GiB**. Older release
@@ -1183,8 +1269,9 @@ Secure Boot must remain disabled.
 Zabbly's `/opt/incus` payload is kept in `/usr/lib/opt/incus`, with `/opt` pointing
 to `/usr/lib/opt` so its original paths continue to work and update atomically.
 Use `/var/opt` for locally installed mutable software.
-Enable Incus on the installed host with `djust enable-incus`, then initialize it
-with `sudo incus admin init`.
+Enable Incus on the installed host with `djust enable-incus`. This adds `core`
+to `incus-admin`. Start a new login session or run `newgrp incus-admin`, then
+initialize the server with `incus admin init`.
 
 Debian bootc here is a community integration. CI checks image structure,
 maintenance defaults, kernel/ZFS artifacts, and tool executables; validate an

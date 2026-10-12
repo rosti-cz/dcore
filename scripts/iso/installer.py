@@ -22,6 +22,44 @@ def module(name, path):
     return result
 
 
+GIB = 1024**3
+
+
+def check_resources(config, require_free=False, staging=Path('/var/lib/containers'),
+                    meminfo=Path('/proc/meminfo')):
+    memory = {}
+    for line in meminfo.read_text().splitlines():
+        fields = line.split()
+        if fields[0] in ('MemTotal:', 'MemAvailable:'):
+            memory[fields[0][:-1]] = int(fields[1]) * 1024
+    minimum = config.get('minimum_ram_bytes', 16 * GIB)
+    # Firmware and kernel reservations reduce Linux's reported usable RAM.
+    if memory['MemTotal'] < minimum - GIB:
+        raise ValueError(f'This offline installer needs at least {minimum / GIB:.0f} GiB RAM; '
+                         f'detected {memory["MemTotal"] / GIB:.1f} GiB. Increase the VM memory '
+                         'and boot the ISO again. The destination disk has not been changed.')
+    filesystem = subprocess.check_output(
+        ['findmnt', '--noheadings', '--output', 'FSTYPE', '--target', str(staging)], text=True).strip()
+    if filesystem != 'tmpfs':
+        raise ValueError('Image staging must be on the dedicated RAM filesystem; disk unchanged.')
+    temporary = staging / 'image-tmp'
+    temporary.mkdir(mode=0o700, exist_ok=True)
+    info = temporary.stat()
+    if temporary.is_symlink() or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise ValueError('Image temporary directory must be private and owned by the installer.')
+    # Podman image loading defaults to /var/tmp on the smaller live overlay.
+    os.environ['TMPDIR'] = str(temporary)
+    if require_free:
+        needed = 2 * config.get('image_size_bytes', 4 * GIB) + GIB
+        capacity = os.statvfs(staging)
+        available = capacity.f_bavail * capacity.f_frsize
+        if min(memory['MemAvailable'], available) < needed:
+            raise ValueError(f'Image loading needs {needed / GIB:.1f} GiB free RAM staging space; '
+                             f'available RAM {memory["MemAvailable"] / GIB:.1f} GiB, '
+                             f'staging {available / GIB:.1f} GiB. Increase RAM or free staging space '
+                             'before retrying. The destination disk has not been changed.')
+
+
 def media_devices():
     source = subprocess.check_output(
         ['findmnt', '--noheadings', '--output', 'SOURCE', '--mountpoint', str(MEDIUM)], text=True).strip()
@@ -78,6 +116,7 @@ def install():
     if not Path('/sys/firmware/efi').is_dir():
         raise ValueError('Boot the installer in UEFI mode with Secure Boot disabled.')
     config = json.loads((MEDIUM / 'dcore/installer.json').read_text())
+    check_resources(config, require_free=True)
     checker = module('block_check', INSTALL / 'lib/check-block-device.py')
     password_tools = module('password_tools', INSTALL / 'lib/install-password.py')
     choices = eligible_disks(checker, media_devices())
@@ -145,7 +184,7 @@ def install():
         subprocess.run(['systemctl', 'reboot'], check=True)
 
 
-def main():
+def plain_main():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     if os.geteuid() != 0 or not sys.stdin.isatty():
         raise ValueError('The installer needs a root console terminal.')
@@ -160,4 +199,27 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    if '--host' in sys.argv:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        if os.geteuid() == 0 or not sys.stdin.isatty():
+            sys.exit('Run djust install directly as an ordinary user in an interactive terminal.')
+        subprocess.run(['/usr/bin/sudo', '-v'], check=True)
+        from session import HostInstallerSession
+        from interface import InstallerApp
+        app = InstallerApp(HostInstallerSession())
+        try:
+            app.run()
+        finally:
+            app.session.close()
+    elif '--plain' in sys.argv:
+        plain_main()
+    else:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        if os.geteuid() != 0 or not sys.stdin.isatty():
+            sys.exit('The installer needs a root console terminal.')
+        from interface import InstallerApp
+        app = InstallerApp()
+        try:
+            app.run()
+        finally:
+            app.session.close()

@@ -176,7 +176,7 @@ class DispatchTests(unittest.TestCase):
 
 
 class InsideInstallTests(unittest.TestCase):
-    def execute(self, filesystem='ext4', payload=None, fail_password=False):
+    def execute(self, filesystem='ext4', payload=None, fail_password=False, defer=False, fail_cleanup=False):
         with tempfile.TemporaryDirectory() as work:
             original_mkdtemp = tempfile.mkdtemp
             calls = []
@@ -186,12 +186,12 @@ class InsideInstallTests(unittest.TestCase):
                     (Path(command[-1]) / 'etc').mkdir()
                 if fail_password and command[0] == 'chpasswd':
                     raise subprocess.CalledProcessError(1, command)
-                return types.SimpleNamespace(returncode=0)
+                return types.SimpleNamespace(returncode=1 if fail_cleanup and command[:2] == ['cryptsetup', 'close'] else 0)
             def output(command, **kwargs):
                 return {'blockdev': str(10 * 1024**3), 'blkid': 'efi-test-uuid', 'cryptsetup': 'luks-test-uuid'}[command[0]]
             args = argparse.Namespace(device='/dev/test', filesystem=filesystem, image='localhost/dcore:test',
                 ssh_key=None, core_password_stdin=True, local=True, no_grow_root=False,
-                target_image='ghcr.io/rosti-cz/dcore:trixie')
+                target_image='ghcr.io/rosti-cz/dcore:trixie', defer_account=defer, state_dir=Path(work)/'state')
             data = payload if payload is not None else helper.password_tools.encode_credentials(b'core-fixture', b'luks-fixture')
             with mock.patch.object(helper.os, 'geteuid', return_value=0), \
                  mock.patch.object(helper.Path, 'is_block_device', return_value=True), \
@@ -201,7 +201,8 @@ class InsideInstallTests(unittest.TestCase):
                  mock.patch.object(helper.subprocess, 'run', side_effect=execute), \
                  mock.patch.object(helper.sys, 'stdin', types.SimpleNamespace(buffer=io.BytesIO(data))), \
                  mock.patch.object(helper, 'partitions', return_value=('/dev/test2', '/dev/test3')), \
-                 mock.patch.object(helper.tempfile, 'mkdtemp', side_effect=lambda prefix, dir: original_mkdtemp(prefix=prefix, dir=work)):
+                 mock.patch.object(helper.tempfile, 'mkdtemp', side_effect=lambda prefix, dir: original_mkdtemp(prefix=prefix, dir=work)), \
+                 mock.patch.object(helper.password_tools, 'write_layout', side_effect=lambda directory, data: calls.append((['checkpoint', json.loads(json.dumps(data))], {}))):
                 error = None
                 try:
                     helper.inside_install(args)
@@ -224,6 +225,22 @@ class InsideInstallTests(unittest.TestCase):
                 self.assertEqual(params['input'], b'core:core-fixture\n')
                 self.assertTrue(any(c[:2] == ['cryptsetup', 'close'] for c in commands))
                 self.assertFalse(any('core-fixture' in str(c) or 'luks-fixture' in str(c) for c in commands))
+
+    def test_deferred_account_records_completed_cleanup_without_configuring_password(self):
+        for filesystem in ('ext4', 'btrfs', 'xfs'):
+            calls, error = self.execute(filesystem, defer=True)
+            self.assertIsNone(error)
+            commands = [command for command, _ in calls]
+            self.assertFalse(any(command[0] == 'chpasswd' for command in commands))
+            checkpoints = [command[1] for command in commands if command[0] == 'checkpoint']
+            self.assertEqual([item['clean'] for item in checkpoints], [False, True])
+            self.assertTrue(all(item['deployed'] for item in checkpoints))
+
+    def test_deferred_mapping_close_failure_keeps_cleanup_pending(self):
+        calls, error = self.execute(defer=True, fail_cleanup=True)
+        self.assertIsInstance(error, ValueError)
+        checkpoints = [command[1] for command, _ in calls if command[0] == 'checkpoint']
+        self.assertEqual([item['clean'] for item in checkpoints], [False])
 
     def test_bad_payload_never_wipes(self):
         calls, error = self.execute(payload=b'bad-secret-json')

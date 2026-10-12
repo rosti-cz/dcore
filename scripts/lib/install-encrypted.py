@@ -103,6 +103,10 @@ def host_install(args):
         command += ['--ssh-key', '/run/dcore-install.pub']
     if getattr(args, 'core_password_stdin', False):
         command.append('--core-password-stdin')
+    if getattr(args, 'defer_account', False):
+        command += ['--defer-account', '--state-dir', '/run/dcore-install-state']
+        position = command.index(args.image)
+        command[position:position] = ['-v', f'{args.state_dir}:/run/dcore-install-state']
     if getattr(args, 'target_image', None):
         command += ['--target-image', args.target_image]
     if getattr(args, 'local', False):
@@ -176,6 +180,7 @@ def inside_install(args):
     root_mounted = False
     esp_mounted = False
     deployment_mounted = False
+    checkpoint = None
     deployment = Path(tempfile.mkdtemp(prefix='dcore-encrypted-deployment-', dir='/run'))
     mountpoint = Path(tempfile.mkdtemp(prefix='dcore-encrypted-', dir='/run'))
     try:
@@ -259,7 +264,14 @@ def inside_install(args):
             if existing and not existing.endswith('\n'):
                 output.write('\n')
             output.write(f'UUID={boot_uuid} /boot vfat rw,nosuid,nodev,umask=0077 0 2\n')
-        if core_password is not None:
+        if getattr(args, 'defer_account', False):
+            root_uuid = subprocess.check_output(['blkid', '-s', 'UUID', '-o', 'value', mapped_device], text=True).strip()
+            checkpoint = {
+                'version': 1, 'device': args.device, 'root_partition': encrypted,
+                'root_uuid': root_uuid, 'luks_uuid': luks_uuid, 'mapper': mapper,
+                'deployed': True, 'clean': False}
+            password_tools.write_layout(args.state_dir, checkpoint)
+        elif core_password is not None:
             password_tools.provision_core_password(deployment, core_password)
             del core_password
         run(['umount', '--recursive', str(deployment)])
@@ -307,6 +319,9 @@ def inside_install(args):
             print('Cleanup incomplete: ' + '; '.join(cleanup_errors), file=sys.stderr)
             if original_error is None:
                 raise ValueError('Encrypted installation cleanup failed; inspect the reported mappings.')
+        if checkpoint is not None and not cleanup_errors:
+            checkpoint['clean'] = True
+            password_tools.write_layout(args.state_dir, checkpoint)
 
 
 
@@ -321,11 +336,15 @@ def main():
     parser.add_argument('--local', action='store_true')
     parser.add_argument('--ssh-key')
     parser.add_argument('--core-password-stdin', action='store_true')
+    parser.add_argument('--defer-account', action='store_true')
+    parser.add_argument('--state-dir')
     parser.add_argument('--passphrase-file')
     parser.add_argument('--no-grow-root', action='store_true')
     parser.add_argument('--requested-device')
     parser.add_argument('--identity')
     args = parser.parse_args()
+    if args.defer_account and (not args.core_password_stdin or not args.state_dir):
+        raise ValueError('--defer-account requires --core-password-stdin and --state-dir.')
     if not args.ssh_key and not args.core_password_stdin:
         raise ValueError('Supply --ssh-key or --core-password-stdin for administrator access.')
     if args.core_password_stdin and args.passphrase_file:

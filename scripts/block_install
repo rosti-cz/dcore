@@ -14,6 +14,8 @@ Usage: sudo block_install DEVICE [--ssh-key PUBLIC_KEY | --core-password-stdin] 
   --target-image REF     Registry reference for installed system updates
   --core-password-stdin  Read core's console/SSH password from stdin; with --encrypt,
                          read version-1 JSON containing core_password and luks_passphrase
+  --defer-account       Internal staged installer: deploy OS without configuring access
+  --state-dir PATH      Private root-owned directory for the deployed-disk checkpoint
   --ssh-key PATH         Existing OpenSSH public key for root/core access
   --confirm-device PATH  Noninteractive erase confirmation; must equal DEVICE
   --help                 Show this help
@@ -29,7 +31,7 @@ HELP
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
 requested_device=$1; shift
 filesystem=ext4; image=ghcr.io/rosti-cz/dcore:trixie; ssh_key=; confirmation_device=; encrypt=false; no_grow_root=false; passphrase_file=
-local_image=false; target_image=; core_password=false
+local_image=false; target_image=; core_password=false; defer_account=false; state_dir=
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help|-h) usage; exit 0 ;;
@@ -37,12 +39,14 @@ while [[ $# -gt 0 ]]; do
         --no-grow-root) no_grow_root=true; shift; continue ;;
         --local) local_image=true; shift; continue ;;
         --core-password-stdin) core_password=true; shift; continue ;;
+        --defer-account) defer_account=true; shift; continue ;;
     esac
     [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
     case $1 in
         --filesystem) filesystem=$2 ;;
         --image) image=$2 ;;
         --target-image) target_image=$2 ;;
+        --state-dir) state_dir=$2 ;;
         --passphrase-file) passphrase_file=$2 ;;
         --ssh-key) ssh_key=$2 ;;
         --confirm-device) confirmation_device=$2 ;;
@@ -51,6 +55,16 @@ while [[ $# -gt 0 ]]; do
     shift 2
 done
 target_image=${target_image:-$image}
+[[ $defer_account != true || ( $core_password == true && -n $state_dir ) ]] || { echo '--defer-account requires --core-password-stdin and --state-dir.' >&2; exit 2; }
+if [[ $defer_account == true ]]; then
+    python3 - "$state_dir" <<'PYSTATE'
+import os, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+info = path.stat()
+if path.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
+    sys.exit('Installation state directory must be private and owned by root.')
+PYSTATE
+fi
 [[ $core_password != true || $encrypt != true || -z $passphrase_file ]] || { echo '--encrypt --core-password-stdin cannot use --passphrase-file.' >&2; exit 2; }
 [[ $core_password != true || -n $confirmation_device ]] || { echo '--core-password-stdin requires --confirm-device; confirm erasure before supplying the password.' >&2; exit 2; }
 [[ -z $passphrase_file || $encrypt == true ]] || { echo '--passphrase-file requires --encrypt.' >&2; exit 2; }
@@ -105,6 +119,7 @@ if [[ $encrypt == true ]]; then
     encryption_args=()
     if [[ -n $ssh_key ]]; then encryption_args+=(--ssh-key "$ssh_key"); fi
     if [[ $core_password == true ]]; then encryption_args+=(--core-password-stdin); fi
+    if [[ $defer_account == true ]]; then encryption_args+=(--defer-account --state-dir "$state_dir"); fi
     encryption_args+=(--target-image "$target_image")
     if [[ $local_image == true ]]; then encryption_args+=(--local); fi
     if [[ $no_grow_root == true ]]; then encryption_args+=(--no-grow-root); fi
@@ -129,6 +144,10 @@ else
     if [[ $core_password == true ]]; then
         container_args+=(-i -v "$script_dir/lib/install-password.py:/run/dcore-install-password.py:ro")
         install_command=(python3 /run/dcore-install-password.py "$device")
+        if [[ $defer_account == true ]]; then
+            container_args+=(-v "$state_dir:/run/dcore-install-state")
+            install_command+=(--defer-account --state-dir /run/dcore-install-state)
+        fi
     fi
     podman run --rm --pull=never --privileged --pid=host --ipc=host \
         --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
@@ -140,5 +159,5 @@ else
 fi
 sync
 printf '\nInstalled %s with %s on %s.\nBoot it in UEFI mode with Secure Boot disabled.\nThe current host has not been rebooted.\n' "$image" "$filesystem" "$device"
-if [[ $core_password == true ]]; then echo 'Log in at the console or over SSH as core using the supplied password.'; fi
+if [[ $core_password == true && $defer_account != true ]]; then echo 'Log in at the console or over SSH as core using the supplied password.'; fi
 if [[ -n $ssh_key ]]; then echo 'SSH as root or core using the matching private key.'; fi

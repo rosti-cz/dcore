@@ -12,6 +12,8 @@ import unittest
 from unittest import mock
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
+privileged = types.ModuleType('privileged')
+importlib.machinery.SourceFileLoader('privileged', str(ROOT / 'rootfs/usr/libexec/dcore/admin-privileged')).exec_module(privileged)
 admin = types.ModuleType('admin')
 importlib.machinery.SourceFileLoader('admin', str(ROOT / 'rootfs/usr/libexec/dcore/admin')).exec_module(admin)
 
@@ -37,20 +39,22 @@ class AdminTests(unittest.TestCase):
         key = admin.CORE_SSH/'id_ed25519'
         key.write_text('existing-private-test-fixture')
         original = key.stat()
-        with mock.patch.object(admin.pwd, 'getpwnam'), mock.patch.object(admin, 'run') as run:
+        with mock.patch.object(admin.pwd, 'getpwnam'), mock.patch.object(admin, 'run', return_value=result('{"exists":true}')) as run:
             admin.gen_sshkey()
         self.assertEqual(key.read_text(), 'existing-private-test-fixture')
         self.assertEqual(key.stat().st_mtime_ns, original.st_mtime_ns)
-        run.assert_not_called()
+        run.assert_called_once_with(admin.PRIVILEGED_HELPER, 'core-key-status', privileged=True, capture=True)
 
     def test_key_generation_runs_as_core(self):
-        account = types.SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
-        with mock.patch.object(admin.pwd, 'getpwnam', return_value=account), mock.patch.object(admin, 'run') as run:
+        account = types.SimpleNamespace(pw_uid=1000, pw_gid=1000)
+        with mock.patch.object(admin.pwd, 'getpwnam', return_value=account), \
+             mock.patch.object(admin.os, 'geteuid', return_value=1001), \
+             mock.patch.object(admin, 'run', return_value=result('{"exists":false}')) as run:
             admin.gen_sshkey()
         command = run.call_args.args
-        self.assertEqual(command[:5], ('runuser', '-u', 'core', '--', 'ssh-keygen'))
+        self.assertEqual(command[:6], ('/usr/bin/sudo', '-u', 'core', '-H', '--', 'ssh-keygen'))
         self.assertIn('ed25519', command)
-        self.assertEqual(admin.CORE_SSH.stat().st_mode & 0o777, 0o700)
+        self.assertIn(mock.call(admin.PRIVILEGED_HELPER, 'prepare-core-ssh', privileged=True), run.call_args_list)
 
     def test_password_change_is_interactive_and_keeps_tokens(self):
         with mock.patch.object(admin, 'root_luks', return_value='/dev/test-root'), mock.patch.object(admin, 'run') as run:
@@ -94,13 +98,15 @@ class AdminTests(unittest.TestCase):
         self.assertFalse(admin.TIMER_DROPIN.exists())
         self.assertTrue(all(call.args[0] == 'systemd-analyze' for call in run.call_args_list))
 
-    def test_schedule_acceptance_writes_real_newlines(self):
+    def test_schedule_acceptance_delegates_privileged_write(self):
         with mock.patch.object(admin, 'booted_image'), mock.patch('builtins.input', side_effect=['6','02:30','yes']), \
              mock.patch.object(admin, 'run', return_value=result()) as run:
             admin.enable_autoupgrade()
-        contents = admin.TIMER_DROPIN.read_text()
-        self.assertEqual(contents, '[Timer]\nOnCalendar=\nOnCalendar=Sat *-*-* 02:30:00\nRandomizedDelaySec=0\n')
-        self.assertIn(mock.call('systemctl','enable','--now','dcore-update.timer'), run.call_args_list)
+        self.assertFalse(admin.TIMER_DROPIN.exists())
+        self.assertIn(mock.call(admin.PRIVILEGED_HELPER, 'write-timer', 'Sat *-*-* 02:30:00', privileged=True), run.call_args_list)
+        self.assertIn(mock.call('systemctl','enable','--now','dcore-update.timer', privileged=True), run.call_args_list)
+        privileged.write_timer(admin.TIMER_DROPIN, 'Sat *-*-* 02:30:00')
+        self.assertEqual(admin.TIMER_DROPIN.read_text(), '[Timer]\nOnCalendar=\nOnCalendar=Sat *-*-* 02:30:00\nRandomizedDelaySec=0\n')
 
     def test_invalid_time_and_noninteractive_refuse(self):
         with mock.patch.object(admin, 'booted_image'), mock.patch('builtins.input', side_effect=['1','25:00']), \
@@ -121,13 +127,59 @@ class AdminTests(unittest.TestCase):
             mutations = [call.args for call in run.call_args_list if call.args[1] not in ('is-enabled','is-active')]
             if answer == 'n': self.assertEqual(mutations, [])
             elif enabled: self.assertEqual(mutations, [('systemctl','disable','--now',*admin.INCUS_UNITS)])
-            else: self.assertIn(('systemctl','start','incus.service'), mutations)
+            else:
+                self.assertIn(('systemctl','start','incus.service'), mutations)
+                self.assertIn(mock.call('groupadd','--force','--system','incus-admin',privileged=True),run.call_args_list)
+                self.assertIn(mock.call('usermod','--append','--groups','incus-admin','core',privileged=True),run.call_args_list)
             self.assertFalse(any('incus-agent.service' in command for command in mutations))
 
-    def test_upgrade_stages_without_apply(self):
-        with mock.patch.object(admin, 'booted_image'), mock.patch.object(admin, 'run') as run:
+    def test_upgrade_stages_os_and_upgrades_brew_as_core(self):
+        with mock.patch.object(admin, 'booted_image'), \
+             mock.patch.object(admin.pwd, 'getpwnam', return_value=types.SimpleNamespace(pw_uid=1000)), \
+             mock.patch.object(admin.os, 'geteuid', return_value=1000), mock.patch.object(admin, 'run') as run:
             admin.upgrade()
-        run.assert_called_once_with('bootc','upgrade')
+        self.assertEqual(run.call_args_list, [mock.call('bootc','upgrade',privileged=True),
+            mock.call(admin.BREW,'update'),mock.call(admin.BREW,'upgrade')])
+        self.assertFalse(any('--apply' in c.args for c in run.call_args_list))
+
+    def test_upgrade_retries_only_failed_brew_step(self):
+        calls=[]
+        def invoke(*args, **kwargs):
+            calls.append(args)
+            if args==(admin.BREW,'update') and calls.count(args)==1:
+                raise subprocess.CalledProcessError(1,args)
+            return result()
+        with mock.patch.object(admin,'booted_image'), \
+             mock.patch.object(admin.pwd,'getpwnam',return_value=types.SimpleNamespace(pw_uid=1000)), \
+             mock.patch.object(admin.os,'geteuid',return_value=1000), \
+             mock.patch.object(admin,'run',side_effect=invoke),mock.patch('builtins.input',return_value='y'):
+            admin.upgrade()
+        self.assertEqual(calls.count(('bootc','upgrade')),1)
+        self.assertEqual(calls.count((admin.BREW,'update')),2)
+        self.assertEqual(calls[-1],(admin.BREW,'upgrade'))
+
+    def test_homebrew_only_uses_owner_without_root_brew(self):
+        with mock.patch.object(admin.pwd,'getpwnam',return_value=types.SimpleNamespace(pw_uid=1000)), \
+             mock.patch.object(admin.os,'geteuid',return_value=1001),mock.patch.object(admin,'run') as run, \
+             mock.patch.object(admin,'booted_image') as status:
+            admin.upgrade('homebrew')
+        status.assert_not_called()
+        self.assertEqual(run.call_args_list,[mock.call('/usr/bin/sudo','-u','core','-H','--',admin.BREW,'update'),
+                                            mock.call('/usr/bin/sudo','-u','core','-H','--',admin.BREW,'upgrade')])
+
+    def test_root_entry_rejected_even_with_sudo_user(self):
+        with mock.patch.object(admin.os,'geteuid',return_value=0), \
+             mock.patch.dict(os.environ,{'SUDO_USER':'core','SUDO_UID':'1000'}), \
+             mock.patch.object(admin.sys,'argv',['admin','upgrade']),mock.patch.object(admin,'upgrade') as upgrade:
+            self.assertEqual(admin.main(),1)
+        upgrade.assert_not_called()
+
+    def test_privileged_commands_resolve_system_path(self):
+        with mock.patch.object(admin.shutil,'which',return_value='/usr/bin/bootc') as which, \
+             mock.patch.object(admin.subprocess,'run',return_value=result()) as run:
+            admin.run('bootc','upgrade',privileged=True)
+        which.assert_called_once_with('bootc',path='/usr/sbin:/usr/bin:/sbin:/bin')
+        self.assertEqual(run.call_args.args[0],('/usr/bin/sudo','--','/usr/bin/bootc','upgrade'))
 
     def test_public_key_rejects_private_content(self):
         key = self.work/'key.pub'; key.write_text('-----BEGIN OPENSSH PRIVATE KEY-----\nfixture\n')
@@ -140,11 +192,11 @@ class AdminTests(unittest.TestCase):
         checker = types.SimpleNamespace(check=mock.Mock(return_value=identity))
         devices = {'blockdevices':[{'name':'/dev/test-disk','type':'disk','size':20*1024**3,'model':'test','serial':'test'}]}
         with mock.patch.object(admin, 'booted_image', return_value='ghcr.io/rosti-cz/dcore:trixie'), \
-             mock.patch.object(admin, 'load_module', return_value=checker), \
+             mock.patch.object(admin, 'check_disk', side_effect=checker.check), \
              mock.patch.object(admin, 'select_key', return_value=Path('/test/key.pub')), \
              mock.patch('builtins.input', side_effect=['1','1','y']), \
              mock.patch.object(admin, 'run', return_value=result(json.dumps(devices))) as run:
-            admin.install()
+            admin.install('plain')
         args = run.call_args.args
         self.assertEqual(args[:2], (str(admin.INSTALLER), '/dev/test-disk'))
         self.assertIn('--encrypt', args)
@@ -155,12 +207,19 @@ class AdminTests(unittest.TestCase):
         checker = types.SimpleNamespace(check=mock.Mock(side_effect=[{'diskseq':1}, {'diskseq':2}]))
         devices={'blockdevices':[{'name':'/dev/test-disk','type':'disk','size':20*1024**3}]}
         with mock.patch.object(admin, 'booted_image', return_value='example:trixie'), \
-             mock.patch.object(admin, 'load_module', return_value=checker), \
+             mock.patch.object(admin, 'check_disk', side_effect=checker.check), \
              mock.patch.object(admin, 'select_key', return_value=Path('/test/key.pub')), \
              mock.patch('builtins.input', side_effect=['1','1','n']), \
              mock.patch.object(admin, 'run', return_value=result(json.dumps(devices))) as run:
-            with self.assertRaisesRegex(ValueError, 'identity changed'): admin.install()
+            with self.assertRaisesRegex(ValueError, 'identity changed'): admin.install('plain')
         self.assertEqual(run.call_count, 1)
+
+    def test_install_starts_shared_wizard_without_root_frontend(self):
+        with mock.patch.object(admin.os, 'execv') as execute, \
+             mock.patch.object(admin, 'run') as command:
+            admin.install()
+        execute.assert_called_once_with('/usr/bin/python3', ['/usr/bin/python3', '/usr/libexec/dcore/installer/installer.py', '--host'])
+        command.assert_not_called()
 
     def test_booted_image_schema(self):
         data={'status':{'booted':{'image':{'image':{'image':'ghcr.io/rosti-cz/dcore:trixie','transport':'registry'}}}}}

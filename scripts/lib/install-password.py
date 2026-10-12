@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Install a disk and provision core's console/SSH password through stdin."""
 import json
+import os
 from pathlib import Path
 import resource
 import subprocess
@@ -8,6 +9,26 @@ import sys
 import tempfile
 
 MAX_CREDENTIAL_BYTES = 65536
+
+
+def write_layout(state_dir, data):
+    if not state_dir:
+        return
+    directory = Path(state_dir)
+    info = directory.stat()
+    if directory.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077:
+        raise ValueError('Installation state directory must be private and owned by root.')
+    descriptor, temporary = tempfile.mkstemp(prefix='.layout-', dir=directory)
+    try:
+        with os.fdopen(descriptor, 'w') as output:
+            json.dump(data, output)
+            output.write('\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, directory / 'layout.json')
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def encode_credentials(core_password, luks_passphrase):
@@ -84,11 +105,18 @@ def root_partition(device):
     raise ValueError('Installed root partition was not found.')
 
 
-def install(device, options, password):
+def install(device, options, password, defer_account=False, state_dir=None):
     # Validate before bootc can erase anything. No password in argv or files.
     validate_password(password)
     subprocess.run(['bootc', 'install', 'to-disk', device, '--wipe', *options], check=True)
     subprocess.run(['udevadm', 'settle'], check=True)
+    if defer_account:
+        root = root_partition(device)
+        uuid = subprocess.check_output(['blkid', '-s', 'UUID', '-o', 'value', root], text=True).strip()
+        write_layout(state_dir, {'version': 1, 'device': device, 'root_partition': root,
+                                'root_uuid': uuid, 'luks_uuid': None, 'mapper': None,
+                                'deployed': True, 'clean': True})
+        return
     work = tempfile.mkdtemp(prefix='dcore-password-', dir='/run')
     try:
         sysroot = Path(work) / 'sysroot'
@@ -124,7 +152,15 @@ def install(device, options, password):
 if __name__ == '__main__':
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     try:
-        install(sys.argv[1], sys.argv[2:], sys.stdin.buffer.read(4097))
+        options = sys.argv[2:]
+        defer = '--defer-account' in options
+        state_dir = None
+        if defer:
+            options.remove('--defer-account')
+            position = options.index('--state-dir')
+            state_dir = options[position + 1]
+            del options[position:position + 2]
+        install(sys.argv[1], options, sys.stdin.buffer.read(4097), defer, state_dir)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         # CalledProcessError for chpasswd contains argv, never its stdin.
         print(f'Installation/password provisioning failed: {error}', file=sys.stderr)
