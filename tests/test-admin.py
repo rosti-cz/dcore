@@ -133,6 +133,58 @@ class AdminTests(unittest.TestCase):
                 self.assertIn(mock.call('usermod','--append','--groups','incus-admin','core',privileged=True),run.call_args_list)
             self.assertFalse(any('incus-agent.service' in command for command in mutations))
 
+    def test_locale_and_timezone_apply_only_selected_value_with_sudo(self):
+        for action, tool, listing, setting, value in (
+            (admin.switch_locale, 'localectl', 'list-locales', 'set-locale', 'cs_CZ.utf8'),
+            (admin.set_timezone, 'timedatectl', 'list-timezones', 'set-timezone', 'Europe/Prague'),
+        ):
+            with self.subTest(tool=tool), mock.patch.object(admin, 'run',
+                    side_effect=[result(value+'\n'), result(value+'\n'), result()]) as run:
+                action()
+            self.assertEqual(run.call_args_list[0], mock.call(tool, '--no-pager', listing, capture=True))
+            self.assertEqual(run.call_args_list[1].args[0], 'fzf')
+            self.assertNotIn('privileged', run.call_args_list[1].kwargs)
+            self.assertEqual(run.call_args_list[-1], mock.call(tool, setting, value, privileged=True))
+
+    def test_picker_cancellation_and_errors_never_apply_settings(self):
+        for action in (admin.switch_locale, admin.set_timezone):
+            for response in (result(returncode=1), result(returncode=130),
+                             result('unknown\n'), result('en_US.utf8\ncs_CZ.utf8\n'), result(returncode=2)):
+                with self.subTest(action=action.__name__, response=response), \
+                     mock.patch.object(admin, 'run', side_effect=[result('en_US.utf8\n'), response]) as run:
+                    if response.returncode in (1, 130):
+                        action()
+                    else:
+                        with self.assertRaises((ValueError, subprocess.CalledProcessError)): action()
+                self.assertEqual(run.call_count, 2)
+                self.assertFalse(any(call.kwargs.get('privileged') for call in run.call_args_list))
+
+    def test_picker_requires_terminal_and_available_options(self):
+        for action in (admin.switch_locale, admin.set_timezone):
+            with mock.patch.object(admin.sys.stdin, 'isatty', return_value=False), \
+                 mock.patch.object(admin, 'run') as run:
+                with self.assertRaises(ValueError): action()
+                run.assert_not_called()
+            with mock.patch.object(admin, 'run', return_value=result()) as run:
+                with self.assertRaises(ValueError): action()
+                self.assertEqual(run.call_count, 1)
+
+    def test_picker_ignores_automatic_selection_defaults(self):
+        with mock.patch.dict(os.environ, {'FZF_DEFAULT_OPTS': '--filter=cs_CZ',
+                'FZF_DEFAULT_OPTS_FILE': '/custom/options', 'TERM': 'xterm'}), \
+             mock.patch.object(admin, 'run', return_value=result('cs_CZ.utf8\n')) as run:
+            self.assertEqual(admin.fuzzy_select('Locale', ['cs_CZ.utf8']), 'cs_CZ.utf8')
+        self.assertNotIn('FZF_DEFAULT_OPTS', run.call_args.kwargs['env'])
+        self.assertNotIn('FZF_DEFAULT_OPTS_FILE', run.call_args.kwargs['env'])
+        self.assertEqual(run.call_args.kwargs['env']['TERM'], 'xterm')
+
+    def test_failed_setting_is_reported_without_success_message(self):
+        for action in (admin.switch_locale, admin.set_timezone):
+            with mock.patch.object(admin, 'run', side_effect=[result('value\n'), result('value\n'),
+                    subprocess.CalledProcessError(1, 'setting')]), mock.patch('builtins.print') as output:
+                with self.assertRaises(subprocess.CalledProcessError): action()
+            output.assert_not_called()
+
     def test_upgrade_stages_os_and_upgrades_brew_as_core(self):
         with mock.patch.object(admin, 'booted_image'), \
              mock.patch.object(admin.pwd, 'getpwnam', return_value=types.SimpleNamespace(pw_uid=1000)), \

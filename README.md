@@ -100,6 +100,14 @@ OS line through a system-wide default configuration.
 | `djust gen-sshkey` | Generate `/var/home/core/.ssh/id_ed25519` as core, or report an existing key without replacing it. |
 | `djust enable-autoupgrade` | Choose a weekly day/time in the system's local timezone and explicitly approve automatic upgrades and reboots. |
 | `djust enable-incus` | Enable the Incus server and add core to incus-admin, or offer to disable it when already enabled/running. |
+| `djust switch-locale` | Search available locales with fzf and apply the selection system-wide; log in again to use it. |
+| `djust set-timezone` | Search available timezones with fzf and apply the selection immediately. |
+
+The image includes precompiled Debian locales for use with immutable `/usr`.
+In either picker, type to search, use arrow keys to choose, and press Enter to
+apply. Esc cancels without changing the system configuration. Switching locale
+sets the system's `LANG`; existing locale category settings and user-specific
+preferences can still override it. Existing services may need restarting to use it.
 
 The same Textual installer is included in both dcore and the offline ISO.
 `djust install` runs its interface as the ordinary caller and elevates individual

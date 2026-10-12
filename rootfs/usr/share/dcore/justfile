@@ -28,6 +28,14 @@ enable-autoupgrade:
 enable-incus:
     @/usr/libexec/dcore/admin enable-incus
 
+# Select and apply the system locale with fzf; takes effect on the next login.
+switch-locale:
+    @/usr/libexec/dcore/admin switch-locale
+
+# Select and apply the system timezone with fzf.
+set-timezone:
+    @/usr/libexec/dcore/admin set-timezone
+
 # Change the root LUKS2 password while preserving TPM enrollment.
 change-luks-password:
     @/usr/libexec/dcore/admin change-luks-password

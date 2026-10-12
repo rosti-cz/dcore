@@ -12,7 +12,7 @@ import subprocess
 import sys
 import types
 
-COMMANDS = ('change-luks-password', 'enroll-tpm', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus')
+COMMANDS = ('change-luks-password', 'enroll-tpm', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus', 'switch-locale', 'set-timezone')
 INSTALLER = Path('/usr/libexec/dcore/install/block_install')
 # Preserve the original filename for existing host configurations.
 TIMER_DROPIN = Path('/etc/systemd/system/dcore-update.timer.d/20-ujust.conf')
@@ -58,6 +58,44 @@ def load_module(path, name):
     module = types.ModuleType(name)
     importlib.machinery.SourceFileLoader(name, str(path)).exec_module(module)
     return module
+
+
+def fuzzy_select(title, options):
+    options = sorted(set(options))
+    if not options:
+        raise ValueError(f'No available {title.lower()} settings; no changes made.')
+    # Keep selection interactive and single-valued even with custom fzf defaults.
+    environment = {key: value for key, value in os.environ.items() if not key.startswith('FZF_DEFAULT_')}
+    selected = run('fzf', '--no-multi', '--layout=reverse', '--border',
+                   '--prompt', f'{title}> ', '--header', 'Enter to apply; Esc to cancel',
+                   input='\n'.join(options) + '\n', stdout=subprocess.PIPE,
+                   check=False, env=environment)
+    if selected.returncode in (1, 130):
+        print('Cancelled; no changes made.')
+        return None
+    selected.check_returncode()
+    value = selected.stdout.rstrip('\n')
+    if value not in options:
+        raise ValueError('Invalid selection; no changes made.')
+    return value
+
+
+def switch_locale():
+    tty()
+    selected = fuzzy_select('Locale', run('localectl', '--no-pager', 'list-locales', capture=True).stdout.splitlines())
+    if selected is None:
+        return
+    run('localectl', 'set-locale', selected, privileged=True)
+    print(f'System locale set to {selected}. Log in again to use it; existing services may need restarting.')
+
+
+def set_timezone():
+    tty()
+    selected = fuzzy_select('Timezone', run('timedatectl', '--no-pager', 'list-timezones', capture=True).stdout.splitlines())
+    if selected is None:
+        return
+    run('timedatectl', 'set-timezone', selected, privileged=True)
+    print(f'System timezone set to {selected}.')
 
 
 def booted_image():
