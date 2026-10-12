@@ -74,12 +74,12 @@ if args[0]=='pull':
     def setUp(self):
         self.log.write_text('')
 
-    def run_script(self, script, args, mode=None):
+    def run_script(self, script, args, mode=None, input=None):
         env = dict(self.env)
         if mode:
             env['DCORE_TEST_PULL_MODE'] = mode
         return subprocess.run([str(ROOT / 'scripts' / script), *args], env=env,
-                              text=True, capture_output=True)
+                              text=True, capture_output=True, input=input)
 
     def calls(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
@@ -111,9 +111,30 @@ if args[0]=='pull':
         result = self.run_script('block_install', args)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), [])
+
         result = self.run_script('block_install', [self.loop, '--ssh-key', str(self.key), '--confirm-device', self.loop])
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(self.key.read_text(), result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_offline_password_install(self):
+        result = self.run_script('block_install', [self.loop, '--local', '--image', 'localhost/dcore:release',
+            '--target-image', 'ghcr.io/rosti-cz/dcore:trixie', '--core-password-stdin',
+            '--confirm-device', self.loop], input='test-console-password')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertFalse(any(c[1] == 'pull' for c in calls))
+        install = next(c for c in calls if c[:2] == ['podman', 'run'])
+        self.assertIn('--skip-fetch-check', install)
+        self.assertIn('/run/dcore-install-password.py', install)
+        self.assertIn('-i', install)
+        self.assertNotIn('--root-ssh-authorized-keys', install)
+        self.assertEqual(install[install.index('--target-imgref') + 1], 'ghcr.io/rosti-cz/dcore:trixie')
+        self.assertNotIn('test-console-password', json.dumps(calls) + result.stdout + result.stderr)
+
+    def test_password_requires_explicit_confirmation(self):
+        result = self.run_script('block_install', [self.loop, '--core-password-stdin'], input='test-password')
+        self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self.calls(), [])
 
     def test_read_only_and_regular_file(self):

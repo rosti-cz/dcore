@@ -55,8 +55,6 @@ incus --version
 LD_LIBRARY_PATH=/opt/incus/lib /opt/incus/bin/incusd --version
 LD_LIBRARY_PATH=/opt/incus/lib "/opt/incus/bin/qemu-system-$(uname -m)" --version
 docker compose version
-rustic --version
-restic version
 
 distrobox --version
 ovs-vsctl --version

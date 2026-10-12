@@ -84,6 +84,11 @@ def host_install(args):
         '--device', args.device, '--filesystem', args.filesystem,
         '--image', args.image, '--ssh-key', '/run/dcore-install.pub',
     ]
+    if getattr(args, 'target_image', None):
+        command += ['--target-image', args.target_image]
+    if getattr(args, 'local', False):
+        command.append('--local')
+        command.insert(2, '--network=none')
     if args.no_grow_root:
         command.append('--no-grow-root')
     # Neither the file path nor its contents are passed into the container.
@@ -202,9 +207,11 @@ def inside_install(args):
             '--generic-image', '--root-mount-spec', '/dev/mapper/dcore-root',
             # bootc otherwise emits systemd.mount-extra=...:ro for /boot.
             '--boot-mount-spec', '',
-            '--target-imgref', args.image, '--root-ssh-authorized-keys', args.ssh_key,
+            '--target-imgref', getattr(args, 'target_image', None) or args.image, '--root-ssh-authorized-keys', args.ssh_key,
             '--karg', f'rd.luks.name={luks_uuid}=dcore-root', '--karg', 'console=tty0',
         ]
+        if getattr(args, 'local', False):
+            command.append('--skip-fetch-check')
         if args.no_grow_root:
             command += ['--karg', 'dcore.grow-root=0']
         if args.filesystem == 'xfs':
@@ -280,6 +287,8 @@ def main():
     parser.add_argument('--device', required=True)
     parser.add_argument('--filesystem', choices=('ext4', 'btrfs', 'xfs'), required=True)
     parser.add_argument('--image', required=True)
+    parser.add_argument('--target-image')
+    parser.add_argument('--local', action='store_true')
     parser.add_argument('--ssh-key', required=True)
     parser.add_argument('--passphrase-file')
     parser.add_argument('--no-grow-root', action='store_true')

@@ -25,8 +25,6 @@ RUN --mount=type=bind,source=shared/build.sh,target=/build-bootc.sh \
 FROM base AS system
 ARG DEBIAN_RELEASE
 ARG INCUS_CHANNEL=stable
-ARG RUSTIC_VERSION=latest
-ARG RESTIC_VERSION=latest
 ARG IMAGE_SOURCE=https://github.com/rosti-cz/dcore
 ARG IMAGE_REVISION=local
 LABEL containers.bootc="1" ostree.bootable="1" \
@@ -36,9 +34,8 @@ LABEL containers.bootc="1" ostree.bootable="1" \
 COPY rootfs/ /
 RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     --mount=type=bind,source=scripts/install-system.sh,target=/install-system.sh \
-    --mount=type=bind,source=scripts/install-backup-tools.sh,target=/install-backup-tools.sh \
     --mount=type=bind,source=scripts/install-homebrew.sh,target=/install-homebrew.sh \
-    /install-system.sh && /install-backup-tools.sh && /install-homebrew.sh
+    /install-system.sh && /install-homebrew.sh
 COPY scripts/block_install /usr/libexec/dcore/install/block_install
 COPY scripts/lib/ /usr/libexec/dcore/install/lib/
 # Install the source-built boot stack after APT so Debian packages cannot overwrite it.

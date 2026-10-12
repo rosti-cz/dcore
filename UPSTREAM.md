@@ -9,7 +9,5 @@ The upstream copyright notice is in `LICENSES/bootcrew-mono.txt`; the complete
 Apache-2.0 license is in `LICENSES/Apache-2.0.txt`.
 
 bootc is built from https://github.com/bootc-dev/bootc; its upstream licenses
-remain in the source checkout during the build. Backup tools are downloaded from
-https://github.com/rustic-rs/rustic/releases and
-https://github.com/restic/restic/releases. Incus uses the signed Zabbly repository
+remain in the source checkout during the build. Incus uses the signed Zabbly repository
 documented at https://github.com/zabbly/incus.

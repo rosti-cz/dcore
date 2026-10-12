@@ -1,4 +1,4 @@
-name: Build release VM images
+name: Build release disks and offline installer
 
 on:
   release:
@@ -104,13 +104,19 @@ jobs:
           sudo scripts/build-disk-images.sh "$SOURCE_IMAGE" "$IMAGE:$DEBIAN_RELEASE" \
             "$RELEASE_TAG" "$DEBIAN_RELEASE" "$GITHUB_WORKSPACE/dist" 10G
           sudo chown -R "$(id -u):$(id -g)" dist
+      - name: Build offline installer ISO
+        run: |
+          sudo scripts/build-installer-iso.sh "$SOURCE_IMAGE" "$IMAGE:$DEBIAN_RELEASE" \
+            "$RELEASE_TAG" "$DEBIAN_RELEASE" "$GITHUB_WORKSPACE/dist"
+          sudo chown -R "$(id -u):$(id -g)" dist
       - name: Upload artifacts to the triggering release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           STEM="dcore-$RELEASE_TAG-$DEBIAN_RELEASE-amd64"
           gh release upload "$RELEASE_TAG" --repo "$REPOSITORY" --clobber \
-            "dist/$STEM.raw.xz" "dist/$STEM.qcow2" "dist/$STEM-incus.tar.xz" "dist/$STEM-manifest.json"
+            "dist/$STEM.raw.xz" "dist/$STEM.qcow2" "dist/$STEM-incus.tar.xz" "dist/$STEM-manifest.json" \
+            "dist/$STEM-installer.iso" "dist/$STEM-installer-manifest.json"
       - name: Share checksums for the release
         uses: actions/upload-artifact@v7
         with:

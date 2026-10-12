@@ -11,7 +11,8 @@ deferred.
 
 It includes Debian ZFS (with a module compiled for the image kernel), Incus from
 [Zabbly's stable repository](https://github.com/zabbly/incus), Docker and Compose,
-all requested CLI tools, and the latest stable Rustic and Restic releases.
+and the requested CLI tools. Run backup tools such as Restic and Rustic in
+Docker or Podman containers.
 Podman supplies bootc's required container runtime; sudo is included for administration.
 Release downloads are checked against upstream SHA-256 checksums.
 `bat` and `ripgrep` provide Debian's `batcat` and `rg` commands.
@@ -20,14 +21,15 @@ Release downloads are checked against upstream SHA-256 checksums.
 
 - Debian Trixie with configurable release variants, daily OCI builds and Debian
   release tags (`trixie`, `stable`, `latest`).
-- GitHub release artifacts: 10 GiB raw, QEMU QCOW2 and Incus VM images.
+- GitHub release artifacts: offline installer ISO, 10 GiB raw, QEMU QCOW2 and Incus VM images.
 - Incus guest agent and installers for Incus VMs and physical block devices.
 - ext4 by default, with Btrfs and XFS installer options; automatic root growth
   when the root partition is last and disk space follows it.
 - Designed for a single system disk; system-disk RAID is not currently supported.
 - Optional passphrase-protected LUKS2 root in `block_install`.
 - `core` administrator with passwordless sudo; installation SSH keys shared
-  with root. Password-based SSH login is disabled.
+  with root. Password-based SSH login is disabled by default; password-provisioned
+  installations enable it for core.
 - Persistent Homebrew owned by core, with command paths for every user,
   including root, and Distrobox for development containers.
 - Open vSwitch, ready for administrator configuration.
@@ -49,15 +51,13 @@ Release downloads are checked against upstream SHA-256 checksums.
 - Package management: Homebrew, owned by the `core` user in persistent storage.
 - Switching: Debian Open vSwitch (`openvswitch-switch`,
   `openvswitch-common`).
-- Backups: latest stable Rustic (`rustic`) and Restic (`restic`).
 - System: bootc, OSTree, sudo, OpenSSH server, netplan, systemd-resolved,
   systemd-timesyncd (enabled), fstrim timer (enabled).
 - Storage: Debian ZFS (`zfsutils-linux`, `zfs-zed`, `zfs-dracut`, and
   `zfs-dkms` compiled for the image kernel), parted, `btrfs-progs` (`btrfs`), ext4, XFS and FAT utilities, cryptsetup and systemd-cryptsetup.
 
 The full package/version inventory is `/usr/share/dcore/packages.tsv` inside
-an image. Backup-tool versions are recorded under `/usr/share/dcore` too.
-
+an image.
 ## Administration with djust
 
 The image includes Debian's `just` command runner and a system Justfile at
@@ -193,7 +193,7 @@ sudo ovs-vsctl show
 The [GitHub repository](https://github.com/rosti-cz/dcore) automatically builds
 and publishes OCI images from the `main` branch every day at 02:23 UTC. Builds
 also run on pushes to `main`, on pull requests, and on manual dispatch.
-GitHub releases are only for distributing disk images; daily OCI builds do not
+GitHub releases distribute disk images and the offline installer; daily OCI builds do not
 require a release. Successful `main` builds publish the same image to:
 
 - `ghcr.io/rosti-cz/dcore:trixie`
@@ -227,8 +227,6 @@ sudo podman build --pull=always --no-cache --format=oci \
 sudo podman run --rm dcore:trixie /usr/libexec/dcore/verify-image
 ```
 
-`RUSTIC_VERSION` and `RESTIC_VERSION` default to `latest`, resolved during each
-fresh build. Override them with release versions for reproducible builds.
 bootc is pinned to v1.17.1. Trixie's libostree 2025.2 lacks composefs support
 and is too old for current bootc. `shared/build-ostree.sh` builds pinned
 OSTree 2026.4 and composefs 1.0.8 from checksum-verified upstream release
@@ -240,24 +238,89 @@ ZFS and all requested distro tools remain Debian packages.
 This creates a bootable OCI image. Use a bootc-compatible
 installer/provisioning flow to install it, supply an administrator account and
 SSH authorized key, and choose a persistent registry tag as the image source.
-Password SSH login is disabled. Default networking uses DHCP on `en*` and `eth*`.
+Password SSH login is disabled by default; password-provisioned installations
+enable it for core. Default networking uses DHCP on `en*` and `eth*`.
 Replace `/etc/netplan/90-default.yaml` if your host needs static addressing.
+
+## Offline installer ISO
+
+Every GitHub release also builds
+`dcore-VERSION-trixie-amd64-installer.iso`, an offline bare-metal installer.
+It contains the exact release OCI image and a minimal Debian live environment;
+no network connection or registry login is required to install. The accompanying
+`-installer-manifest.json` records the source digest and update reference. Both
+files are covered by the release's `SHA256SUMS`.
+
+Write the ISO to a USB drive using an image-writing tool, or attach it through
+your server's virtual CD/DVD interface. Boot in **UEFI mode with Secure Boot
+disabled**. Allow **16 GiB RAM** for the live environment and image staging, and
+select a system drive of at least **10 GiB**. Image staging uses RAM and never
+uses the destination disk as temporary storage.
+
+The console installer lists eligible whole drives with size, model and serial,
+asks for the `core` password twice with input hidden, and requires typing
+`ERASE /dev/DEVICE` before proceeding. It excludes the installer medium,
+mounted disks, active swap and storage mappings, and rechecks drive identity
+after loading the bundled image. Installation uses `block_install` with ext4
+and an unencrypted root. The existing standalone installer's filesystem and
+LUKS2 options remain available separately.
+
+After installation, remove/eject the ISO and reboot. Log in at the local console
+as `core` with your chosen password; core has passwordless sudo. The same password
+also works over SSH as `core`, for example `ssh core@SERVER_IP`. Root and other
+accounts retain the default SSH policy. For key-based access, add your public key to
+`/var/home/core/.ssh/authorized_keys` with directory mode 0700, file mode 0600,
+and ownership `core:core`. No default password or SSH key is baked into the ISO.
+The installed system tracks `ghcr.io/rosti-cz/dcore:trixie` for later updates,
+while automatic updates remain disabled until enabled by the administrator.
+
+Cancellation and installation errors return to the installer; type `SHELL` at
+the restart prompt for a root rescue shell. A failed installation may leave the
+chosen disk incomplete. The installer only offers reboot after both disk
+installation and password provisioning succeed.
+
+To build an ISO locally, use an amd64 Linux host with root, Podman, gzip and
+Python3. The build needs network access for the Debian live environment, even
+though the resulting installer operates offline:
+
+```bash
+sudo scripts/build-installer-iso.sh \
+  ghcr.io/rosti-cz/dcore@sha256:RELEASE_DIGEST \
+  ghcr.io/rosti-cz/dcore:trixie v0.1.0 trixie ./dist
+```
+
+The builder uses a disposable privileged Debian container with `live-build`.
+Release publication rejects ISOs exceeding GitHub's 2 GiB per-asset limit.
+
+Local validation used a network-disconnected UEFI QEMU VM, the ISO attached as
+USB storage, and two 10 GiB test disks. It verified boot-medium exclusion,
+hidden password prompts, explicit erase confirmation, offline installation,
+preservation of the unselected disk, and console login as core after booting
+without the ISO. Passwordless sudo and the installed GHCR update reference
+were also verified. A rebuilt ISO booted from a SCSI virtual CD and included
+the cgroupfs Podman configuration without manual changes. The legacy IDE
+virtual-CD controller failed to boot with the local OVMF firmware; use USB or
+SCSI virtual-CD media for this QEMU test setup. Core-only SSH password login
+and incorrect-password rejection were additionally verified with a real SSH
+server in an isolated dcore container. Bare-metal boots remain unverified.
 
 ## Testing options
 
 Use an amd64 test machine and wired DHCP networking. Incus and QEMU need an
 x86_64 VM with UEFI firmware and Secure Boot disabled; bare metal needs the same
 firmware configuration. These images use native composefs, systemd-boot and an
-ext4 root filesystem. The Incus guest agent supplies access inside Incus. QEMU
-and bare metal need your SSH public key provisioned before their first boot;
-password login and a default administrator password are not provided.
+ext4 root filesystem. The Incus guest agent supplies access inside Incus.
+Prebuilt disk images need your SSH public key provisioned before their first
+boot; they have no default administrator password. The offline ISO installer
+instead provisions the console and SSH password you choose during installation.
 
 - [Incus](#test-in-an-incus-vm): install the current OCI image with the helper,
   or import a release image.
 - [QEMU](#test-with-qemu): build a disk with your key, or boot a provisioned
   release disk with a writable overlay.
 - [Bare metal](#test-on-bare-metal): install the OCI image from live Linux,
-  or write a provisioned raw release image onto a spare disk.
+  use the [offline installer ISO](#offline-installer-iso), or write a provisioned
+  raw release image onto a spare disk.
 - [System checks](#verify-the-installed-system): verify bootc, networking,
   services, storage and updates after boot.
 
@@ -833,8 +896,6 @@ modprobe zfs
 zfs version
 incus --version
 docker compose version
-rustic --version
-restic version
 btrfs --version
 parted --version
 ncdu --version

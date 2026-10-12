@@ -3,14 +3,17 @@
 set -euo pipefail
 usage() {
     cat <<'HELP'
-Usage: sudo block_install DEVICE --ssh-key PUBLIC_KEY [OPTIONS]
+Usage: sudo block_install DEVICE [--ssh-key PUBLIC_KEY | --core-password-stdin] [OPTIONS]
   DEVICE                 Whole USB/NVMe/SSD disk; prefer /dev/disk/by-id/...
   --filesystem TYPE      Root filesystem: ext4 (default), btrfs, xfs
   --no-grow-root         Disable automatic growth, including before LUKS unlock
   --encrypt              LUKS2 root; ask and confirm the boot-unlock passphrase
   --passphrase-file PATH Secured password file for --encrypt (0600/0400)
   --image REF            OCI image (default ghcr.io/rosti-cz/dcore:trixie)
-  --ssh-key PATH         Required existing OpenSSH public key for root/core access
+  --local                Use an already loaded image; never pull or check the registry
+  --target-image REF     Registry reference for installed system updates
+  --core-password-stdin  Read core's console/SSH password from stdin (unencrypted installs)
+  --ssh-key PATH         Existing OpenSSH public key for root/core access
   --confirm-device PATH  Noninteractive erase confirmation; must equal DEVICE
   --help                 Show this help
 Erases the selected whole disk. Refuses partitions, mounted/swap/mapped/read-only
@@ -25,16 +28,20 @@ HELP
 [[ $# -gt 0 ]] || { usage >&2; exit 2; }
 requested_device=$1; shift
 filesystem=ext4; image=ghcr.io/rosti-cz/dcore:trixie; ssh_key=; confirmation_device=; encrypt=false; no_grow_root=false; passphrase_file=
+local_image=false; target_image=; core_password=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help|-h) usage; exit 0 ;;
         --encrypt) encrypt=true; shift; continue ;;
         --no-grow-root) no_grow_root=true; shift; continue ;;
+        --local) local_image=true; shift; continue ;;
+        --core-password-stdin) core_password=true; shift; continue ;;
     esac
     [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
     case $1 in
         --filesystem) filesystem=$2 ;;
         --image) image=$2 ;;
+        --target-image) target_image=$2 ;;
         --passphrase-file) passphrase_file=$2 ;;
         --ssh-key) ssh_key=$2 ;;
         --confirm-device) confirmation_device=$2 ;;
@@ -42,6 +49,9 @@ while [[ $# -gt 0 ]]; do
     esac
     shift 2
 done
+target_image=${target_image:-$image}
+[[ $core_password != true || $encrypt != true ]] || { echo 'Console password provisioning currently supports unencrypted installs only.' >&2; exit 2; }
+[[ $core_password != true || -n $confirmation_device ]] || { echo '--core-password-stdin requires --confirm-device; confirm erasure before supplying the password.' >&2; exit 2; }
 [[ -z $passphrase_file || $encrypt == true ]] || { echo '--passphrase-file requires --encrypt.' >&2; exit 2; }
 case $filesystem in
     ext4|btrfs|xfs) ;;
@@ -55,7 +65,9 @@ done
 if systemd-detect-virt --quiet --container || [[ -e /.dockerenv || -e /run/.containerenv ]]; then
     echo 'Run on the Linux host or a live Linux environment, outside containers.' >&2; exit 1
 fi
-[[ -n $ssh_key && -f $ssh_key ]] || { echo '--ssh-key must name an existing public key.' >&2; exit 2; }
+[[ -n $ssh_key || $core_password == true ]] || { echo 'Supply --ssh-key or --core-password-stdin for administrator access.' >&2; exit 2; }
+if [[ -n $ssh_key ]]; then
+[[ -f $ssh_key ]] || { echo '--ssh-key must name an existing public key.' >&2; exit 2; }
 ssh_key=$(realpath -- "$ssh_key")
 python3 - "$ssh_key" <<'PYKEY'
 from pathlib import Path
@@ -65,6 +77,7 @@ if not lines or not all(line.startswith(('ssh-', 'ecdsa-', 'sk-')) for line in l
     sys.exit('Expected an OpenSSH public key, never a private key.')
 PYKEY
 ssh-keygen -l -f "$ssh_key" >/dev/null || { echo 'Invalid SSH public key.' >&2; exit 2; }
+fi
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 device=$(realpath -- "$requested_device")
 identity=$(python3 "$script_dir/lib/check-block-device.py" "$device")
@@ -78,13 +91,19 @@ else
     read -r -p "Type ERASE $requested_device to continue: " confirmation
     [[ $confirmation == "ERASE $requested_device" ]] || { echo 'Cancelled; disk unchanged.' >&2; exit 1; }
 fi
-podman pull "$image"
+if [[ $local_image == true ]]; then
+    podman image exists "$image" || { echo 'Local installation image is missing; disk unchanged.' >&2; exit 1; }
+else
+    podman pull "$image"
+fi
 # Recheck after downloading: a disk may have been mounted, activated or unplugged.
 [[ $(realpath -- "$requested_device") == "$device" ]] || { echo 'Destination path changed; disk unchanged.' >&2; exit 1; }
 current_identity=$(python3 "$script_dir/lib/check-block-device.py" "$device")
 [[ $current_identity == "$identity" ]] || { echo 'Destination identity or size changed; disk unchanged.' >&2; exit 1; }
 if [[ $encrypt == true ]]; then
     encryption_args=()
+    encryption_args+=(--target-image "$target_image")
+    if [[ $local_image == true ]]; then encryption_args+=(--local); fi
     if [[ $no_grow_root == true ]]; then encryption_args+=(--no-grow-root); fi
     if [[ -n $passphrase_file ]]; then encryption_args+=(--passphrase-file "$passphrase_file"); fi
     python3 "$script_dir/lib/install-encrypted.py" --device "$device" \
@@ -92,15 +111,31 @@ if [[ $encrypt == true ]]; then
         --filesystem "$filesystem" --image "$image" --ssh-key "$ssh_key" "${encryption_args[@]}"
 else
     filesystem_args=(--filesystem "$filesystem")
+    container_args=(); access_args=()
+    if [[ -n $ssh_key ]]; then
+        container_args+=(-v "$ssh_key:/run/dcore-install.pub:ro")
+        access_args+=(--root-ssh-authorized-keys /run/dcore-install.pub)
+    fi
+    if [[ $local_image == true ]]; then
+        access_args+=(--skip-fetch-check)
+        container_args+=(--network=none)
+    fi
     if [[ $no_grow_root == true ]]; then filesystem_args+=(--karg dcore.grow-root=0); fi
     if [[ $filesystem == xfs ]]; then filesystem_args+=(--allow-missing-verity); fi
+    install_command=(bootc install to-disk "$device" --wipe)
+    if [[ $core_password == true ]]; then
+        container_args+=(-i -v "$script_dir/lib/install-password.py:/run/dcore-install-password.py:ro")
+        install_command=(python3 /run/dcore-install-password.py "$device")
+    fi
     podman run --rm --pull=never --privileged --pid=host --ipc=host \
         --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \
-        -v "$ssh_key:/run/dcore-install.pub:ro" "$image" \
-        bootc install to-disk "$device" --wipe "${filesystem_args[@]}" \
+        "${container_args[@]}" "$image" \
+        "${install_command[@]}" "${filesystem_args[@]}" \
         --composefs-backend --bootloader systemd --disable-selinux --generic-image \
-        --target-imgref "$image" --root-ssh-authorized-keys /run/dcore-install.pub \
+        --target-imgref "$target_image" "${access_args[@]}" \
         --karg console=tty0
 fi
 sync
-printf '\nInstalled %s with %s on %s.\nBoot it in UEFI mode with Secure Boot disabled; SSH as root or core using the matching private key.\nThe current host has not been rebooted.\n' "$image" "$filesystem" "$device"
+printf '\nInstalled %s with %s on %s.\nBoot it in UEFI mode with Secure Boot disabled.\nThe current host has not been rebooted.\n' "$image" "$filesystem" "$device"
+if [[ $core_password == true ]]; then echo 'Log in at the console or over SSH as core using the supplied password.'; fi
+if [[ -n $ssh_key ]]; then echo 'SSH as root or core using the matching private key.'; fi

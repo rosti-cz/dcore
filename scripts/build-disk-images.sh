@@ -91,7 +91,6 @@ PYMETADATA
 XZ_OPT='-T2 -3' tar --create --xz --file "$output_dir/$stem-incus.tar.xz" \
     --directory "$work_dir" metadata.yaml rootfs.img
 podman run --rm "$source_image" cat /usr/share/dcore/packages.tsv > "$work_dir/packages.tsv"
-podman run --rm "$source_image" cat /usr/share/dcore/backup-versions > "$work_dir/backup-versions"
 podman run --rm "$source_image" cat /usr/share/dcore/boot-stack-versions > "$work_dir/boot-stack-versions"
 podman run --rm "$source_image" bootc --version > "$work_dir/bootc-version"
 podman run --rm "$source_image" cat /usr/share/dcore/bootc-commit > "$work_dir/bootc-commit"
@@ -105,8 +104,7 @@ packages = []
 for line in (work / 'packages.tsv').read_text().splitlines():
     fields = line.split('\t')
     packages.append({'package': fields[0], 'version': fields[1]})
-versions = dict(line.split('=', 1) for name in ('backup-versions', 'boot-stack-versions')
-                for line in (work / name).read_text().splitlines())
+versions = dict(line.split('=', 1) for line in (work / 'boot-stack-versions').read_text().splitlines())
 manifest = {'release': version, 'debian_release': release, 'architecture': 'amd64',
             'created': int(created), 'source_image': source, 'tracking_image': tracking,
             'source_revision': image.get('Labels', {}).get('org.opencontainers.image.revision'),
