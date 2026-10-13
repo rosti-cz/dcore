@@ -18,20 +18,22 @@ type diskMsg struct {
 	err   error
 }
 type model struct {
-	engine     *Engine
-	web        *Web
-	inputs     []textinput.Model
-	disks      []Disk
-	selected   int
-	filesystem int
-	encrypt    bool
-	focus      int
-	err        string
-	width      int
-	height     int
-	enrolling  bool
-	logs       bool
-	viewport   viewport.Model
+	engine       *Engine
+	web          *Web
+	inputs       []textinput.Model
+	disks        []Disk
+	selected     int
+	filesystem   int
+	encrypt      bool
+	focus        int
+	err          string
+	width        int
+	height       int
+	review       *Input
+	confirmErase bool
+	enrolling    bool
+	logs         bool
+	viewport     viewport.Model
 }
 
 func newModel(e *Engine, w *Web) (model, error) {
@@ -40,7 +42,7 @@ func newModel(e *Engine, w *Web) (model, error) {
 		return model{}, err
 	}
 	m := model{engine: e, web: w, disks: disks, width: 90, height: 30, viewport: viewport.New(90, 22)}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 4; i++ {
 		field := textinput.New()
 		field.CharLimit = 4096
 		field.Width = 45
@@ -79,9 +81,40 @@ func (m model) input() Input {
 	if s.Settings != nil && contains(s.Completed, "install") {
 		device = s.Settings.Device
 	}
-	return Input{Device: device, Filesystem: []string{"ext4", "btrfs", "xfs"}[m.filesystem], Encrypt: m.encrypt, CorePassword: m.inputs[0].Value(), CoreConfirm: m.inputs[1].Value(), LUKSPassphrase: m.inputs[2].Value(), LUKSConfirm: m.inputs[3].Value(), Confirmation: m.inputs[4].Value(), Revision: s.Revision}
+	return Input{Device: device, Filesystem: []string{"ext4", "btrfs", "xfs"}[m.filesystem], Encrypt: m.encrypt, CorePassword: m.inputs[0].Value(), CoreConfirm: m.inputs[1].Value(), LUKSPassphrase: m.inputs[2].Value(), LUKSConfirm: m.inputs[3].Value(), Revision: s.Revision}
 }
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	if m.review != nil {
+		if key, ok := message.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "esc":
+				m.review = nil
+			case "tab", "shift+tab", "left", "right":
+				m.confirmErase = !m.confirmErase
+			case "enter":
+				if !m.confirmErase {
+					m.review = nil
+					return m, nil
+				}
+				input := *m.review
+				input.Confirmed = true
+				m.review = nil
+				if err := m.engine.Start(input); err != nil {
+					m.err = err.Error()
+				} else {
+					m.err = ""
+					for i := range m.inputs {
+						m.inputs[i].Reset()
+					}
+				}
+				return m, nil
+			case "ctrl+c":
+				m.review = nil
+				return m.Update(message)
+			}
+			return m, nil
+		}
+	}
 	if m.logs {
 		if key, ok := message.(tea.KeyMsg); ok && key.String() == "esc" {
 			m.logs = false
@@ -154,11 +187,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "shift+tab" {
 				delta = -1
 			}
-			m.focus = (m.focus + delta + 14) % 14
+			m.focus = (m.focus + delta + 13) % 13
 			for i := range m.inputs {
 				m.inputs[i].Blur()
 			}
-			if m.focus >= 3 && m.focus <= 7 {
+			if m.focus >= 3 && m.focus <= 6 {
 				return m, m.inputs[m.focus-3].Focus()
 			}
 			return m, nil
@@ -182,18 +215,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			switch m.focus {
-			case 8:
+			case 7:
 				input := m.input()
-				if err := m.engine.Start(input); err != nil {
-					m.err = err.Error()
-				} else {
-					m.err = ""
-					for i := range m.inputs {
-						m.inputs[i].Reset()
-					}
-				}
+				m.review = &input
+				m.confirmErase = false
 				return m, nil
-			case 9:
+			case 8:
 				if s.Running != "" {
 					m.err = "Wait for installation before opening a rescue shell."
 					return m, nil
@@ -203,22 +230,22 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				return m, tea.ExecProcess(exec.Command("/bin/bash"), func(err error) tea.Msg { m.engine.EndRescue(); return resultMsg{err} })
-			case 12:
+			case 11:
 				if s.Running != "" {
 					m.err = "Wait for installation before rescanning drives."
 					return m, nil
 				}
 				return m, func() tea.Msg { disks, err := m.engine.Disks(); return diskMsg{disks, err} }
-			case 13:
+			case 12:
 				m.logs = true
 				m.viewport.Width = m.width
 				m.viewport.Height = m.height - 4
 				m.viewport.SetContent(strings.Join(s.Logs, "\n"))
 				m.viewport.GotoBottom()
 				return m, nil
-			case 11:
-				return m, func() tea.Msg { return resultMsg{m.engine.Reboot()} }
 			case 10:
+				return m, func() tea.Msg { return resultMsg{m.engine.Reboot()} }
+			case 9:
 				if !s.Done {
 					m.err = "Complete installation before enrolling the Secure Boot key."
 					return m, nil
@@ -237,11 +264,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, func() tea.Msg { return resultMsg{m.engine.Enroll(first, second)} }
 			}
 			if m.enrolling && m.focus == 4 {
-				m.focus = 10
+				m.focus = 9
 				return m, nil
 			}
 		}
-		if m.focus >= 3 && m.focus <= 7 {
+		if m.focus >= 3 && m.focus <= 6 {
 			var cmd tea.Cmd
 			m.inputs[m.focus-3], cmd = m.inputs[m.focus-3].Update(message)
 			return m, cmd
@@ -249,7 +276,39 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+func partitionPreview(parts []Partition, indent string) string {
+	if len(parts) == 0 {
+		return indent + "No partitions found\n"
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		fmt.Fprintf(&b, "%s%s  %.1f GiB  %s  %s  %s\n", indent, p.Name, float64(p.Size)/(1<<30), p.Filesystem, p.Label, strings.Join(p.Mountpoints, ", "))
+		if len(p.Children) > 0 {
+			b.WriteString(partitionPreview(p.Children, indent+"  "))
+		}
+	}
+	return b.String()
+}
+
 func (m model) View() string {
+	if m.review != nil {
+		input := m.review
+		cancel, confirm := "› [ Cancel ]", "  [ Erase drive and install ]"
+		if contains(m.engine.Snapshot().Completed, "install") {
+			confirm = "  [ Retry failed step ]"
+		}
+		if m.confirmErase {
+			cancel = "  [ Cancel ]"
+			confirm = "›" + confirm[1:]
+		}
+		preview := ""
+		for _, d := range m.disks {
+			if d.Name == input.Device {
+				preview = partitionPreview(d.Children, "  ")
+			}
+		}
+		return fmt.Sprintf("Review installation: %s — %s (encryption: %t)\n\n%s\nAll data on the selected drive will be permanently erased during deployment.\nCompleted phases are preserved when retrying.\n\n%s   %s\n\nTab/Left/Right selects • Enter activates • Esc cancels\n", input.Device, input.Filesystem, input.Encrypt, preview, cancel, confirm)
+	}
 	if m.logs {
 		return "dcore installation log — Esc returns\n\n" + m.viewport.View() + "\nUp/Down and PgUp/PgDown scroll; Home/End select the ends.\n"
 	}
@@ -282,13 +341,16 @@ func (m model) View() string {
 		device = s.Settings.Device + " (settings locked)"
 	}
 	b.WriteString(line(0, "Drive: "+device) + "\n")
+	if len(m.disks) > 0 {
+		b.WriteString(partitionPreview(m.disks[m.selected].Children, "    "))
+	}
 	b.WriteString(line(1, "Filesystem: "+[]string{"ext4", "btrfs", "xfs"}[m.filesystem]) + "\n")
 	encrypt := "none"
 	if m.encrypt {
 		encrypt = "LUKS2 — console unlock required at boot"
 	}
 	b.WriteString(line(2, "Encryption: "+encrypt) + "\n")
-	labels := []string{"Core password", "Confirm core password", "Disk passphrase", "Confirm disk passphrase", "Type ERASE /dev/..."}
+	labels := []string{"Core password", "Confirm core password", "Disk passphrase", "Confirm disk passphrase"}
 	if m.enrolling {
 		labels[0] = "Temporary MOK password (1–16 ASCII)"
 		labels[1] = "Confirm temporary MOK password"
@@ -296,14 +358,14 @@ func (m model) View() string {
 	for i, field := range m.inputs {
 		b.WriteString(line(i+3, labels[i]+": "+field.View()) + "\n")
 	}
-	start := "Start installation"
+	start := "Review installation"
 	if s.Failed != "" {
 		start = "Retry failed step: " + s.Failed
 	}
-	b.WriteString(line(8, "[ "+start+" ]") + "  " + line(9, "[ Rescue shell ]") + "  " + line(10, "[ Enroll Secure Boot key ]") + "\n")
-	b.WriteString(line(12, "[ Rescan drives ]") + "  " + line(13, "[ View logs ]") + "\n")
+	b.WriteString(line(7, "[ "+start+" ]") + "  " + line(8, "[ Rescue shell ]") + "  " + line(9, "[ Enroll Secure Boot key ]") + "\n")
+	b.WriteString(line(11, "[ Rescan drives ]") + "  " + line(12, "[ View logs ]") + "\n")
 	if s.CanReboot && s.Done {
-		b.WriteString(line(11, "[ Reboot — remove installer media first ]") + "\n")
+		b.WriteString(line(10, "[ Reboot — remove installer media first ]") + "\n")
 	}
 	if m.enrolling {
 		b.WriteString("Enter temporary MOK password and confirmation, then select Enroll key again.\n")

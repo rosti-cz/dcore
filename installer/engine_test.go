@@ -92,7 +92,7 @@ func testEngine(t *testing.T, b *fakeBackend) *Engine {
 	return e
 }
 func testInput(e *Engine) Input {
-	return Input{Device: "/dev/fixture", Filesystem: "btrfs", Encrypt: true, CorePassword: "private-core", CoreConfirm: "private-core", LUKSPassphrase: "private-disk", LUKSConfirm: "private-disk", Confirmation: "ERASE /dev/fixture", Revision: e.Snapshot().Revision}
+	return Input{Device: "/dev/fixture", Filesystem: "btrfs", Encrypt: true, CorePassword: "private-core", CoreConfirm: "private-core", LUKSPassphrase: "private-disk", LUKSConfirm: "private-disk", Confirmed: true, Revision: e.Snapshot().Revision}
 }
 func TestRetryDoesNotRepeatDeployment(t *testing.T) {
 	b := &fakeBackend{fail: "configure", failOnce: true}
@@ -187,7 +187,7 @@ func TestFilesystemEncryptionMatrix(t *testing.T) {
 	}
 }
 func TestBadInputsNeverStart(t *testing.T) {
-	for _, mutate := range []func(*Input){func(i *Input) { i.Confirmation = "ERASE /dev/other" }, func(i *Input) { i.CoreConfirm = "wrong" }, func(i *Input) { i.LUKSConfirm = "wrong" }, func(i *Input) { i.Filesystem = "zfs" }, func(i *Input) { i.Device = "/dev/other" }, func(i *Input) { i.CorePassword = "x\n"; i.CoreConfirm = "x\n" }} {
+	for _, mutate := range []func(*Input){func(i *Input) { i.Confirmed = false }, func(i *Input) { i.CoreConfirm = "wrong" }, func(i *Input) { i.LUKSConfirm = "wrong" }, func(i *Input) { i.Filesystem = "zfs" }, func(i *Input) { i.Device = "/dev/other" }, func(i *Input) { i.CorePassword = "x\n"; i.CoreConfirm = "x\n" }} {
 		b := &fakeBackend{}
 		e := testEngine(t, b)
 		input := testInput(e)

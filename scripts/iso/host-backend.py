@@ -190,7 +190,7 @@ class Backend:
         if phase == 'install':
             if self.read('layout.json'):
                 raise ValueError('An OS is already deployed; refusing another erase.')
-            if request.get('confirmation') != 'ERASE ' + settings['device']:
+            if request.get('confirmed') is not True:
                 raise ValueError('Fresh erase confirmation is required before deployment.')
             self.identity(settings)
             # Validate credentials before any destructive backend can run.

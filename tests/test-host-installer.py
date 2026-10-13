@@ -95,11 +95,18 @@ class BackendTests(unittest.TestCase):
         self.backend.checker.check.return_value={'diskseq':42}
         with mock.patch.object(host,'run') as run:
             with self.assertRaisesRegex(ValueError,'identity or size changed'):
-                self.backend.phase('install',{'confirmation':'ERASE /dev/fixture'})
+                self.backend.phase('install',{'confirmed':True})
             run.assert_not_called()
 
+    def test_install_requires_explicit_boolean_confirmation(self):
+        for value in (None, False, 'true', 1, 'ERASE /dev/fixture'):
+            with self.subTest(value=value), mock.patch.object(host, 'run') as run:
+                with self.assertRaisesRegex(ValueError, 'confirmation'):
+                    self.backend.phase('install', {'confirmed': value})
+                run.assert_not_called()
+
     def test_erase_and_privileged_deployment_use_stdin_only(self):
-        request={'confirmation':'ERASE /dev/fixture','core_password':'private-core-fixture','luks_passphrase':'private-disk-fixture'}
+        request={'confirmed':True,'core_password':'private-core-fixture','luks_passphrase':'private-disk-fixture'}
         with mock.patch.object(host,'run') as run, \
              mock.patch.object(host.subprocess,'check_output',return_value=str(4*1024**3)), \
              mock.patch.object(host.shutil,'disk_usage',return_value=types.SimpleNamespace(free=20*1024**3)):
@@ -117,7 +124,7 @@ class BackendTests(unittest.TestCase):
         host.write_json(self.backend.directory,'layout.json',{'deployed':True})
         with mock.patch.object(host,'run') as run:
             with self.assertRaisesRegex(ValueError,'already deployed'):
-                self.backend.phase('install',{'confirmation':'ERASE /dev/fixture'})
+                self.backend.phase('install',{'confirmed':True})
             with self.assertRaisesRegex(ValueError,'already deployed'):
                 self.backend.settings(SETTINGS)
             run.assert_not_called()
@@ -145,7 +152,7 @@ class BackendTests(unittest.TestCase):
         self.backend.checks.media_devices = mock.Mock(return_value={'/dev/fixture'})
         with mock.patch.object(host, 'run') as run:
             with self.assertRaisesRegex(ValueError, 'installer medium'):
-                self.backend.phase('install', {'confirmation':'ERASE /dev/fixture'})
+                self.backend.phase('install', {'confirmed':True})
         run.assert_not_called()
 
     def test_enrollment_uses_memfd_hash_and_never_plaintext_arguments(self):

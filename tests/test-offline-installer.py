@@ -167,6 +167,17 @@ class OfflineInstaller(unittest.TestCase):
         self.assertEqual([disk['name'] for disk, _ in result], ['/dev/good'])
         self.assertEqual(checker.check.call_args_list, [mock.call('/dev/busy'), mock.call('/dev/good')])
 
+    def test_partition_details_preserved_for_preview(self):
+        partitions = [dict(name='/dev/good1', type='part', size=1024**3,
+                           fstype='ext4', label='old-root', mountpoints=[None])]
+        disk = dict(name='/dev/good', type='disk', size=32*1024**3, children=partitions)
+        checker = mock.Mock()
+        checker.check.return_value = {'diskseq': 7}
+        with mock.patch.object(installer.subprocess, 'check_output', return_value=json.dumps({'blockdevices': [disk]})) as command:
+            result = installer.eligible_disks(checker, set())
+        self.assertEqual(result[0][0]['children'], partitions)
+        self.assertIn('FSTYPE,LABEL,MOUNTPOINTS', command.call_args.args[0][-1])
+
     def test_unknown_media_fails_closed(self):
         with mock.patch.object(installer.subprocess, 'check_output', return_value=''):
             with self.assertRaisesRegex(ValueError, 'installer medium'):

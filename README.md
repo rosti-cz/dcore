@@ -122,7 +122,8 @@ preferences can still override it. Existing services may need restarting to use 
 The same Go installer, built with Bubble Tea, is included in both dcore and the offline ISO.
 `djust install` runs its interface as the ordinary caller and elevates individual
 backend operations through sudo. It excludes the running system's mounted,
-swap and mapped disks and requires an exact `ERASE /dev/DEVICE` confirmation.
+swap and mapped disks, shows the selected drive's existing partitions, and asks
+for confirmation before erasing it.
 It reuses a cached OCI image with the booted digest, or downloads that exact
 version, and preserves the image reference for updates on the new installation.
 Host staging uses `/var/lib/containers` on the existing host filesystem;
@@ -350,8 +351,8 @@ Select **ext4** (default), **Btrfs**, or **XFS**, then choose an unencrypted roo
 (default) or **LUKS2 encryption**. All three filesystems support both modes.
 Enter the `core` password twice with input hidden; encrypted installations also
 ask for a separate disk-unlock passphrase twice. The installer displays the
-drive, filesystem and encryption settings and requires typing `ERASE /dev/DEVICE`
-before proceeding. It excludes the installer medium, mounted disks, active swap
+drive, its existing partitions, filesystem and encryption settings for review.
+Confirm **Erase drive and install** to proceed; typing a drive path is not required. It excludes the installer medium, mounted disks, active swap
 and storage mappings, and rechecks drive identity after loading the bundled
 image. Both modes install through `block_install` without contacting a registry.
 

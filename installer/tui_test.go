@@ -43,3 +43,55 @@ func TestTerminalSecretsAreMaskedAndQuitBlockedWhileBusy(t *testing.T) {
 		t.Fatal("allowed exit during installation")
 	}
 }
+
+func TestTerminalReviewDefaultsToCancelAndRequiresActivation(t *testing.T) {
+	b := &fakeBackend{}
+	e := testEngine(t, b)
+	m, err := newModel(e, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.inputs[0].SetValue("core-secret")
+	m.inputs[1].SetValue("core-secret")
+	m.focus = 7
+	changed, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = changed.(model)
+	if m.review == nil || m.confirmErase || len(b.calls) != 0 {
+		t.Fatal("review started installation")
+	}
+	changed, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = changed.(model)
+	if m.review != nil || len(b.calls) != 0 {
+		t.Fatal("default did not cancel")
+	}
+	changed, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = changed.(model)
+	changed, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = changed.(model)
+	changed, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = changed.(model)
+	e.wg.Wait()
+	if m.review != nil || !e.Snapshot().Done {
+		t.Fatal(m.err, e.Snapshot())
+	}
+}
+
+func TestTerminalPartitionPreviewChangesWithSelectedDrive(t *testing.T) {
+	e := testEngine(t, &fakeBackend{})
+	m, err := newModel(e, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.disks = []Disk{
+		{Name: "/dev/first", Children: []Partition{{Name: "/dev/first1", Size: 1 << 30, Filesystem: "ext4", Label: "old-root"}}},
+		{Name: "/dev/second"},
+	}
+	if text := m.View(); !strings.Contains(text, "/dev/first1") || !strings.Contains(text, "old-root") {
+		t.Fatal(text)
+	}
+	changed, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = changed.(model)
+	if text := m.View(); strings.Contains(text, "/dev/first1") || !strings.Contains(text, "No partitions") {
+		t.Fatal(text)
+	}
+}

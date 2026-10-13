@@ -230,7 +230,7 @@ func TestWebInstallationUsesSharedEngineWithoutExposingSecrets(t *testing.T) {
 	if state.Code != 200 || !strings.Contains(state.Body.String(), "/dev/test") {
 		t.Fatal("disk list unavailable")
 	}
-	input := Input{Device: "/dev/test", Filesystem: "btrfs", Encrypt: true, CorePassword: "core-secret", CoreConfirm: "core-secret", LUKSPassphrase: "disk-secret", LUKSConfirm: "disk-secret", Confirmation: "ERASE /dev/test", Revision: e.Snapshot().Revision}
+	input := Input{Device: "/dev/test", Filesystem: "btrfs", Encrypt: true, CorePassword: "core-secret", CoreConfirm: "core-secret", LUKSPassphrase: "disk-secret", LUKSConfirm: "disk-secret", Confirmed: true, Revision: e.Snapshot().Revision}
 	raw, _ := json.Marshal(input)
 	rw := requestWeb(w, "POST", "/api/start", string(raw), cookie, csrf)
 	if rw.Code != 202 {

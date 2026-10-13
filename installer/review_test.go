@@ -59,7 +59,7 @@ func TestNormalizedLogsAndBackendErrorsNeverExposeSecrets(t *testing.T) {
 			if _, err = e.Disks(); err != nil {
 				t.Fatal(err)
 			}
-			input := Input{Device: "/dev/test", Filesystem: "ext4", Encrypt: true, CorePassword: "core-secret", CoreConfirm: "core-secret", LUKSPassphrase: "disk-secret", LUKSConfirm: "disk-secret", Confirmation: "ERASE /dev/test", Revision: e.Snapshot().Revision}
+			input := Input{Device: "/dev/test", Filesystem: "ext4", Encrypt: true, CorePassword: "core-secret", CoreConfirm: "core-secret", LUKSPassphrase: "disk-secret", LUKSConfirm: "disk-secret", Confirmed: true, Revision: e.Snapshot().Revision}
 			if err = e.Start(input); err != nil {
 				t.Fatal(err)
 			}

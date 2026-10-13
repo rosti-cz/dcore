@@ -52,7 +52,8 @@ COPY --from=installer-builder /dcore-installer /usr/libexec/dcore/installer/dcor
 # Install the source-built boot stack after APT so Debian packages cannot overwrite it.
 COPY --from=builder /output/ /
 RUN ldconfig
-RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
+# Keep signing-secret mount directories out of the committed image layer.
+RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     --mount=type=bind,source=scripts/configure-system.sh,target=/configure-system.sh \
     --mount=type=bind,source=scripts/sign-secureboot.py,target=/sign-secureboot.py \
     --mount=type=secret,id=secureboot_key \

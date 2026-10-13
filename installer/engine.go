@@ -17,11 +17,21 @@ import (
 	"unicode/utf8"
 )
 
+type Partition struct {
+	Name        string      `json:"name"`
+	Size        int64       `json:"size"`
+	Filesystem  string      `json:"fstype"`
+	Label       string      `json:"label"`
+	Mountpoints []string    `json:"mountpoints"`
+	Children    []Partition `json:"children"`
+}
+
 type Disk struct {
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Model    string `json:"model"`
-	Serial   string `json:"serial"`
+	Children []Partition `json:"children"`
+	Name     string      `json:"name"`
+	Size     int64       `json:"size"`
+	Model    string      `json:"model"`
+	Serial   string      `json:"serial"`
 	identity json.RawMessage
 }
 type Settings struct {
@@ -38,7 +48,7 @@ type Input struct {
 	CoreConfirm    string `json:"core_confirm"`
 	LUKSPassphrase string `json:"luks_passphrase"`
 	LUKSConfirm    string `json:"luks_confirm"`
-	Confirmation   string `json:"confirmation"`
+	Confirmed      bool   `json:"confirmed"`
 	Revision       uint64 `json:"revision"`
 }
 type Snapshot struct {
@@ -364,8 +374,8 @@ func (e *Engine) Start(input Input) error {
 	if err := e.validate(input); err != nil {
 		return err
 	}
-	if !contains(e.state.Completed, "install") && input.Confirmation != "ERASE "+input.Device {
-		return errors.New("type ERASE followed by the exact destination path")
+	if !contains(e.state.Completed, "install") && !input.Confirmed {
+		return errors.New("confirm erasing the selected destination drive")
 	}
 	if err := e.configure(input); err != nil {
 		return err
@@ -462,7 +472,7 @@ func (e *Engine) run(input Input) {
 			}
 		}
 		if phase == "install" {
-			request["confirmation"] = input.Confirmation
+			request["confirmed"] = input.Confirmed
 		}
 		if err = e.backend.Phase(phase, request, log); err != nil {
 			fail(phase, err)

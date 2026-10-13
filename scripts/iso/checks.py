@@ -56,7 +56,7 @@ def media_devices():
 
 def eligible_disks(checker, excluded):
     disks = json.loads(subprocess.check_output(
-        ['lsblk', '--json', '--paths', '--bytes', '--output', 'NAME,TYPE,SIZE,MODEL,SERIAL,TRAN'],
+        ['lsblk', '--json', '--paths', '--bytes', '--output', 'NAME,TYPE,SIZE,MODEL,SERIAL,TRAN,FSTYPE,LABEL,MOUNTPOINTS'],
         text=True))['blockdevices']
     result = []
     for disk in disks:
