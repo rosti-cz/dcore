@@ -177,10 +177,21 @@ Root and core use Fish as their default login shell. Interactive SSH and local
 console logins show Fastfetch with the bundled dcore logo rendered as terminal
 character art. The image build uses Chafa to render `logo.png` into a portable
 36×12 ANSI logo, so consoles need no image protocol or pixel-size queries.
-Running `fastfetch` displays it again; create `~/.hushlogin` to
-suppress the automatic login display. Remote commands and non-login shells do
-not display the banner. The image creates `core`
-with a persistent home at
+Running `fastfetch` displays it again. Remote commands and non-login shells do
+not display the banner.
+
+To disable the automatic Fastfetch display for your user on SSH and local console
+logins, create an empty `.hushlogin` file in your home directory:
+
+```sh
+touch ~/.hushlogin
+```
+
+This takes effect on your next login. Remove the file with `rm ~/.hushlogin` to
+enable the display again. You can still run `fastfetch` manually while the file
+exists.
+
+The image creates `core` with a persistent home at
 `/var/home/core` (`/home/core` resolves there too). Its password is locked by
 default; use `sudo -iu core` from an administrator account or add an SSH public
 key to its home directory. `core` has passwordless sudo for all commands as
