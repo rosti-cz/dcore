@@ -159,6 +159,23 @@ class AdminTests(unittest.TestCase):
                 self.assertEqual(run.call_count, 2)
                 self.assertFalse(any(call.kwargs.get('privileged') for call in run.call_args_list))
 
+    def test_hostname_sets_validated_static_name_with_sudo(self):
+        with mock.patch('builtins.input', return_value='Server-1.Example'), mock.patch.object(admin, 'run') as run:
+            admin.set_hostname()
+        run.assert_called_once_with('hostnamectl', 'set-hostname', 'server-1.example', privileged=True)
+
+    def test_hostname_cancellation_invalid_names_and_noninteractive_do_not_apply(self):
+        for value in ('', '-server', 'server-', 'server..example', 'my server', 'a'*65, 'localhost\nInjected', '.server'):
+            with self.subTest(value=value), mock.patch('builtins.input', return_value=value), mock.patch.object(admin, 'run') as run:
+                if value:
+                    with self.assertRaises(ValueError): admin.set_hostname()
+                else:
+                    admin.set_hostname()
+                run.assert_not_called()
+        with mock.patch.object(admin.sys.stdin, 'isatty', return_value=False), mock.patch.object(admin, 'run') as run:
+            with self.assertRaises(ValueError): admin.set_hostname()
+            run.assert_not_called()
+
     def test_picker_requires_terminal_and_available_options(self):
         for action in (admin.switch_locale, admin.set_timezone):
             with mock.patch.object(admin.sys.stdin, 'isatty', return_value=False), \
@@ -278,7 +295,7 @@ class AdminTests(unittest.TestCase):
         with mock.patch.object(admin.os, 'execv') as execute, \
              mock.patch.object(admin, 'run') as command:
             admin.install()
-        execute.assert_called_once_with('/usr/bin/python3', ['/usr/bin/python3', '/usr/libexec/dcore/installer/installer.py', '--host'])
+        execute.assert_called_once_with('/usr/libexec/dcore/installer/dcore-installer', ['/usr/libexec/dcore/installer/dcore-installer', '--host'])
         command.assert_not_called()
 
     def test_booted_image_schema(self):

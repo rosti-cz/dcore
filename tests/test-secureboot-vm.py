@@ -17,12 +17,16 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
+import urllib.error
+import http.cookiejar
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--image', required=True)
 parser.add_argument('--filesystem', choices=('ext4', 'btrfs', 'xfs'), default='ext4')
 parser.add_argument('--encrypt', action='store_true')
+parser.add_argument('--check-installer', action='store_true', help='check native DHCP and ordinary-user Go/web installer')
 parser.add_argument('--vars-tool', default='virt-fw-vars')
 parser.add_argument('--ovmf-code')
 parser.add_argument('--ovmf-vars')
@@ -55,6 +59,8 @@ port = socket.socket()
 port.bind(('127.0.0.1', 0))
 ssh_port = port.getsockname()[1]
 port.close()
+web_socket = socket.socket(); web_socket.bind(('127.0.0.1', 0))
+web_port = web_socket.getsockname()[1]; web_socket.close()
 ssh = ['ssh', '-F', '/dev/null', '-p', str(ssh_port), '-o', 'StrictHostKeyChecking=no',
        '-o', f'UserKnownHostsFile={work}/known_hosts', '-o', 'PreferredAuthentications=password',
        '-o', 'PubkeyAuthentication=no', '-o', 'NumberOfPasswordPrompts=1', '-o', 'ConnectTimeout=3', 'core@127.0.0.1']
@@ -113,7 +119,7 @@ SERIAL
             '-global', 'driver=cfi.pflash01,property=secure,value=on', '-m', '3072', '-smp', '2',
             '-drive', f'if=pflash,format=raw,readonly=on,file={code}',
             '-drive', f'if=pflash,format=raw,file={nvram}', '-drive', f'if=virtio,format=raw,file={raw}',
-            '-netdev', f'user,id=n,hostfwd=tcp:127.0.0.1:{ssh_port}-:22', '-device', 'virtio-net-pci,netdev=n',
+            '-netdev', f'user,id=n,hostfwd=tcp:127.0.0.1:{ssh_port}-:22,hostfwd=tcp:127.0.0.1:{web_port}-:80', '-device', 'virtio-net-pci,netdev=n',
             '-display', 'none', '-monitor', 'none', '-chardev',
             f'socket,id=serial,path={serial_socket},server=on,wait=off,logfile={serial_log}', '-serial', 'chardev:serial']
         with (work/(label+'-qemu.log')).open('wb') as output:
@@ -123,7 +129,13 @@ SERIAL
                 if vm.poll() is not None: raise RuntimeError('QEMU failed; inspect '+str(work))
                 if time.monotonic() > deadline: raise TimeoutError('QEMU serial socket')
                 time.sleep(.1)
-            serial = socket.socket(socket.AF_UNIX); serial.connect(str(serial_socket))
+            serial = socket.socket(socket.AF_UNIX)
+            while True:
+                try:
+                    serial.connect(str(serial_socket)); break
+                except (ConnectionRefusedError, FileNotFoundError):
+                    if vm.poll() is not None or time.monotonic() > deadline: raise
+                    time.sleep(.1)
             def drain(connection):
                 try:
                     while connection.recv(65536): pass
@@ -142,6 +154,50 @@ SERIAL
             (work/(label+'-checks.log')).write_text(checks.stdout + checks.stderr)
             assert 'SecureBoot enabled' in checks.stdout and '[integrity]' in checks.stdout, checks.stdout
             assert args.filesystem in checks.stdout.splitlines(), checks.stdout
+            if args.check_installer:
+                network=guest('cat /etc/systemd/network/10-dcore-dhcp.network; cat /var/lib/dcore/network-bootstrap.done; hostname; command -v netplan',check=False)
+                assert 'DHCP=yes' in network.stdout and 'dcore' in network.stdout, network.stdout
+                assert network.returncode != 0, 'Netplan still present'
+                (work/(label+'-network.log')).write_text(network.stdout)
+                if not enrolled:
+                    output=(work/'go-installer.log').open('wb')
+                    front=subprocess.Popen(ssh+['-tt','djust install'],env=environment,stdin=subprocess.PIPE,stdout=output,stderr=subprocess.STDOUT)
+                    try:
+                        deadline_ui=time.monotonic()+45
+                        pin=None
+                        while time.monotonic()<deadline_ui:
+                            text=(work/'go-installer.log').read_text(errors='replace')
+                            text=re.sub(r'\x1b\[[0-9;?]*[A-Za-z]','',text)
+                            match=re.search(r'PIN:\s*(\d{6})',text)
+                            if match:pin=match.group(1);break
+                            if front.poll() is not None:raise RuntimeError('Go installer exited: '+text[-2000:])
+                            time.sleep(.3)
+                        assert pin, (work/'go-installer.log').read_text(errors='replace')[-2000:]
+                        base=f'http://127.0.0.1:{web_port}'
+                        jar=http.cookiejar.CookieJar();http=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+                        html=http.open(base+'/').read().decode()
+                        assert 'Disk unlock passphrase' in html or 'disk passphrase' in html.lower(), html[:500]
+                        def api(path,body=None,headers=None):
+                            import json
+                            request=urllib.request.Request(base+path,data=None if body is None else json.dumps(body).encode(),headers={'Content-Type':'application/json',**(headers or {})})
+                            try:
+                                reply=http.open(request,timeout=15);return reply.status,json.loads(reply.read())
+                            except urllib.error.HTTPError as error:return error.code,error.read().decode()
+                        assert api('/api/state')[0]==401
+                        assert api('/api/login',{'pin':'xxxxxx'})[0]==401
+                        http_status,login=api('/api/login',{'pin':pin});assert http_status==200,login
+                        http_status,state=api('/api/state');assert http_status==200,state
+                        assert not state['snapshot']['can_reboot'],state
+                        assert api('/api/reboot',{})[0]==403
+                        assert api('/api/reboot',{'confirmation':'REBOOT'}, {'X-CSRF-Token':login['csrf']})[0]==409
+                        assert all(row['name'] != '/dev/vda' for row in state['disks']),state
+                        (work/'web-checks.log').write_text('Ordinary-user Go TUI, port80 fd handoff, PIN auth, protected state, CSRF, host reboot refusal and running disk exclusion passed.\n')
+                    finally:
+                        front.terminate()
+                        try:front.wait(timeout=10)
+                        except subprocess.TimeoutExpired:front.kill();front.wait()
+                        guest('pkill -u core -x dcore-installer',check=False)
+                        output.close()
             load = guest('sudo modprobe zfs', check=False)
             if enrolled:
                 assert load.returncode == 0, load.stderr

@@ -1,12 +1,15 @@
 #!/usr/bin/python3
 """Pinned host image sources, ordinary-user sessions and privileged phase safety."""
 import importlib.util
+import array
 import json
 import os
 from pathlib import Path
 import subprocess
+import socket
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from unittest import mock
@@ -14,7 +17,6 @@ from unittest import mock
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts/iso'))
-from session import HostInstallerSession
 spec = importlib.util.spec_from_file_location('host_backend', ROOT/'scripts/iso/host-backend.py')
 host = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(host)
@@ -128,60 +130,114 @@ class BackendTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'ordinary user through djust'):host.main()
             backend.assert_not_called()
 
+    def test_live_load_uses_bundled_archive_without_registry(self):
+        self.backend.live = True
+        self.backend.checks.check_resources = mock.Mock()
+        with mock.patch.object(self.backend, 'cached_image', side_effect=[None, 'c'*64]), \
+             mock.patch.object(host, 'run') as run:
+            self.backend.load()
+        run.assert_called_once_with('podman', 'load', '--input', str(host.MEDIUM/'dcore/image.oci.tar.gz'))
+        self.assertEqual(self.backend.checks.check_resources.call_count, 1)
+        self.assertTrue(self.backend.checks.check_resources.call_args.kwargs['require_free'])
 
-class HostSessionTests(unittest.TestCase):
-    def setUp(self):
-        if os.geteuid()==0:self.skipTest('frontend tests run as an ordinary user')
-        self.temp=tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.remote={'layout':None,'settings':None}
-        self.operations=[]
-        def query(operation,value=None):
-            if operation=='source':return CONFIG
-            if operation=='status':return self.remote.copy()
-            if operation=='settings':self.remote['settings']=value
-            self.operations.append(operation)
-        self.query=mock.patch.object(HostInstallerSession,'query_backend',side_effect=query)
-        self.query.start();self.addCleanup(self.query.stop)
-        self.session=HostInstallerSession(directory=Path(self.temp.name)/'session',install_dir=ROOT/'scripts')
-        self.addCleanup(self.session.close)
-        self.session.settings('/dev/fixture',IDENTITY,'btrfs',True)
-        self.session.credentials(b'private-core-fixture',b'private-disk-fixture')
+    def test_live_media_is_excluded_again_before_install(self):
+        self.backend.live = True
+        self.backend.checks.media_devices = mock.Mock(return_value={'/dev/fixture'})
+        with mock.patch.object(host, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'installer medium'):
+                self.backend.phase('install', {'confirmation':'ERASE /dev/fixture'})
+        run.assert_not_called()
 
-    def test_ordinary_frontend_uses_sudo_only_for_backend_operations(self):
-        with mock.patch.object(self.session,'command') as command:
-            self.session.run_phase('install','ERASE /dev/fixture')
-        args,payload,_=command.call_args.args
-        self.assertEqual(args[:3],['/usr/bin/sudo','--non-interactive','--'])
-        self.assertEqual(args[-1],'install')
-        self.assertNotIn('private-core-fixture',str(args))
-        self.assertEqual(json.loads(payload)['core_password'],'private-core-fixture')
-        self.assertNotIn('private-core-fixture',(self.session.directory/'session.json').read_text())
+    def test_enrollment_uses_memfd_hash_and_never_plaintext_arguments(self):
+        host.write_json(self.backend.directory, 'layout.json',
+            dict(deployed=True, configured=True, verified=True, clean=True))
+        calls = []
+        def execute(*args, **kwargs):
+            calls.append((args, kwargs))
+            descriptor = kwargs['pass_fds'][0]
+            self.assertEqual(os.read(descriptor, 256), b'$6$test$hashed\n')
+            self.assertIn('--hash-file', args)
+            self.assertNotIn('temporary-pin', str(args))
+        status = subprocess.CompletedProcess([], 0, stdout='certificate is not enrolled', stderr='')
+        hashed = subprocess.CompletedProcess([], 0, stdout=b'$6$test$hashed\n', stderr=b'')
+        with mock.patch.object(host.Path, 'is_dir', return_value=True), \
+             mock.patch.object(host.Path, 'is_file', return_value=True), \
+             mock.patch.object(host.subprocess, 'run', side_effect=[status, hashed]), \
+             mock.patch.object(host, 'run', side_effect=execute):
+            self.backend.enroll(dict(enrollment_password='temporary-pin', enrollment_confirm='temporary-pin'))
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn('temporary-pin', (self.backend.directory/'layout.json').read_text())
+        with self.assertRaises(OSError): os.fstat(calls[0][1]['pass_fds'][0])
 
-    def test_host_mode_has_no_live_iso_ram_preflight(self):
-        with mock.patch.object(self.session.checks,'check_resources') as check:
-            self.session.check_resources()
-        check.assert_not_called()
+    def test_enrollment_refuses_before_configuration_or_for_invalid_password(self):
+        with mock.patch.object(host, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'Complete'):
+                self.backend.enroll({})
+            run.assert_not_called()
+        host.write_json(self.backend.directory, 'layout.json',
+            dict(deployed=True, configured=True, verified=True, clean=True))
+        with mock.patch.object(host.Path, 'is_dir', return_value=True), \
+             mock.patch.object(host.Path, 'is_file', return_value=True), \
+             mock.patch.object(host.subprocess, 'run') as run:
+            for password in ('', 'x'*17, 'nonascii-ž', 'bad\nline'):
+                with self.assertRaises(ValueError):
+                    self.backend.enroll(dict(enrollment_password=password, enrollment_confirm=password))
+            run.assert_not_called()
 
-    def test_root_backend_checkpoint_recovers_failed_deployment_cleanup(self):
-        def command(args,payload,log):
-            if args[-1]=='install':
-                self.remote['layout']={'deployed':True,'clean':False}
-                raise ValueError('Injected close failure')
-        with mock.patch.object(self.session,'command',side_effect=command):
-            self.assertFalse(self.session.run('ERASE /dev/fixture'))
-        self.assertEqual(self.session.state['failed'],'cleanup')
-        self.assertIn('install',self.session.state['completed'])
+    def test_reboot_only_on_verified_clean_live_deployment(self):
+        host.write_json(self.backend.directory, 'layout.json',
+            dict(deployed=True, configured=True, verified=True, clean=True))
+        with mock.patch.object(host, 'run') as run:
+            self.backend.live = False
+            with self.assertRaises(ValueError): self.backend.reboot()
+            self.backend.live = True
+            self.backend.reboot()
+            run.assert_called_once_with('systemctl', 'reboot')
 
-    def test_restarting_interface_restores_settings_from_root_checkpoint(self):
-        self.session.close()
-        (self.session.directory/'session.json').unlink()
-        self.remote['layout']={'deployed':True,'configured':True,'clean':True}
-        resumed=HostInstallerSession(directory=self.session.directory,install_dir=ROOT/'scripts')
-        self.addCleanup(resumed.close)
-        self.assertEqual(resumed.state['settings'],SETTINGS)
-        self.assertIn('configure',resumed.state['completed'])
-        self.assertIsNone(resumed.core_password)
+    def test_web_listener_rejects_public_directory_before_binding(self):
+        info = types.SimpleNamespace(st_mode=0o40755, st_uid=1000)
+        with mock.patch.object(host.Path, 'lstat', return_value=info), \
+             mock.patch.object(host.socket, 'socket') as socket:
+            with self.assertRaisesRegex(ValueError, 'private'): host.bind_web(1000)
+            socket.assert_not_called()
+
+    def test_web_listener_transfers_a_live_fd_to_verified_caller(self):
+        directory = self.backend.directory/'dcore-installer'
+        directory.mkdir(mode=0o700)
+        original = socket.socket
+        server = original(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(server.close)
+        server.bind(str(directory/'listener.sock')); server.listen(1)
+        received = []
+        failures = []
+        def receive():
+            try:
+                connection, _ = server.accept()
+                with connection:
+                    data, ancillary, _, _ = connection.recvmsg(32, socket.CMSG_SPACE(array.array('i').itemsize))
+                    self.assertEqual(data, b'dcore-http')
+                    for level, kind, contents in ancillary:
+                        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                            descriptors = array.array('i'); descriptors.frombytes(contents)
+                            received.extend(descriptors)
+            except BaseException as error: failures.append(error)
+        class EphemeralSocket(original):
+            def bind(self, address):
+                return super().bind(('::1', 0) if self.family == socket.AF_INET6 else ('127.0.0.1', 0))
+        def create(family=-1, kind=-1, proto=-1, fileno=None):
+            if fileno is not None:
+                return original(family, kind, proto, fileno=fileno)
+            return original(family, kind) if family == socket.AF_UNIX else EphemeralSocket(family, kind)
+        thread = threading.Thread(target=receive, daemon=True); thread.start()
+        with mock.patch.object(host, 'Path', return_value=directory), mock.patch.object(host.socket, 'socket', side_effect=create):
+            host.bind_web(os.geteuid())
+        thread.join(timeout=3)
+        self.assertFalse(thread.is_alive())
+        self.assertFalse(failures, failures)
+        self.assertEqual(len(received), 1)
+        with original(fileno=received[0]) as listener:
+            self.assertTrue(listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN))
+            self.assertGreater(listener.getsockname()[1], 0)
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

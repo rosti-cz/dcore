@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Privileged, noninteractive operations for djust's ordinary-user installer."""
 import argparse
+import array
 import fcntl
 import importlib.util
 import json
@@ -9,6 +10,9 @@ from pathlib import Path
 import re
 import resource
 import shutil
+import socket
+import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -16,6 +20,9 @@ import tempfile
 sys.dont_write_bytecode = True
 INSTALL = Path('/usr/libexec/dcore/install')
 STATE_ROOT = Path('/run/dcore-install-host')
+LIVE_ROOT = Path('/run/dcore-install-live')
+MEDIUM = Path('/run/live/medium')
+CERTIFICATE = Path('/usr/share/dcore/secureboot/dcore.der')
 
 
 def module(name, path):
@@ -71,11 +78,14 @@ def private_directory(path):
 
 
 class Backend:
-    def __init__(self, uid, root=STATE_ROOT):
+    def __init__(self, uid, root=STATE_ROOT, live=False):
+        self.live = live
+        if live:
+            root = LIVE_ROOT
         private_directory(root)
-        self.directory = root / str(uid)
+        self.directory = root if live else root / str(uid)
         private_directory(self.directory)
-        self.checks = module('installer_checks', Path(__file__).with_name('installer.py'))
+        self.checks = module('installer_checks', Path(__file__).with_name('checks.py'))
         self.checker = module('block_check', INSTALL/'lib/check-block-device.py')
         self.passwords = module('password_tools', INSTALL/'lib/install-password.py')
 
@@ -86,12 +96,21 @@ class Backend:
     def source(self):
         config = self.read('source.json')
         if not config:
-            status = json.loads(subprocess.check_output(['bootc', 'status', '--format=json'], text=True))
-            config = source_from_status(status)
+            if getattr(self, 'live', False):
+                config = json.loads((MEDIUM/'dcore/installer.json').read_text())
+                if not re.fullmatch(r'[a-z0-9./:_-]+@sha256:[a-f0-9]{64}', config['source_image']):
+                    raise ValueError('Live installer source must be pinned by digest.')
+                config['mode'] = 'live'
+                self.checks.check_resources(config)
+            else:
+                status = json.loads(subprocess.check_output(['bootc', 'status', '--format=json'], text=True))
+                config = source_from_status(status)
             write_json(self.directory, 'source.json', config)
         return config
 
     def identity(self, settings, cleanup=False):
+        if getattr(self, 'live', False) and settings['device'] in self.checks.media_devices():
+            raise ValueError('Cannot install onto the live installer medium.')
         if not cleanup:
             if self.checker.check(settings['device']) != settings['identity']:
                 raise ValueError('Destination identity or size changed; refusing to continue.')
@@ -138,9 +157,13 @@ class Backend:
         config = self.source()
         identifier = self.cached_image(config)
         if identifier is None:
-            if shutil.disk_usage('/var/lib/containers').free < 10 * 1024**3:
+            if getattr(self, 'live', False):
+                self.checks.check_resources(config, require_free=True)
+                run('podman', 'load', '--input', str(MEDIUM/'dcore/image.oci.tar.gz'))
+            elif shutil.disk_usage('/var/lib/containers').free < 10 * 1024**3:
                 raise ValueError('Image staging needs at least 10 GiB free on the host filesystem at /var/lib/containers. The destination disk has not been changed.')
-            run('podman', 'pull', config['source_image'])
+            else:
+                run('podman', 'pull', config['source_image'])
             identifier = self.cached_image(config)
         if identifier is None:
             raise ValueError('Cached image digest does not match the booted image.')
@@ -170,6 +193,8 @@ class Backend:
             if request.get('confirmation') != 'ERASE ' + settings['device']:
                 raise ValueError('Fresh erase confirmation is required before deployment.')
             self.identity(settings)
+            # Validate credentials before any destructive backend can run.
+            payload = self.payload(settings, request)
             image_size = int(subprocess.check_output(['podman', 'image', 'inspect', '--format', '{{.Size}}', config['local_image']], text=True))
             if shutil.disk_usage('/var/lib/containers').free < image_size + 1024**3:
                 raise ValueError('Insufficient free host disk space for installation staging; destination unchanged.')
@@ -179,7 +204,7 @@ class Backend:
                     '--state-dir', str(self.directory), '--confirm-device', settings['device']]
             if settings['encrypt']:
                 args.append('--encrypt')
-            run(*args, input=self.payload(settings, request))
+            run(*args, input=payload)
             return
         if phase not in ('configure', 'verify', 'cleanup'):
             raise ValueError('Unknown installation operation.')
@@ -202,28 +227,111 @@ class Backend:
         except (KeyError, AttributeError):
             raise ValueError('Re-enter the required installation credentials.') from None
 
+    def enroll(self, request):
+        layout = self.read('layout.json') or {}
+        if not all(layout.get(flag) is True for flag in ('deployed', 'configured', 'verified', 'clean')):
+            raise ValueError('Complete and verify installation before requesting enrollment.')
+        if not Path('/sys/firmware/efi/efivars').is_dir() or not CERTIFICATE.is_file():
+            raise ValueError('UEFI variables or the dcore enrollment certificate are unavailable.')
+        password = request.get('enrollment_password')
+        if (not isinstance(password, str) or not 1 <= len(password) <= 16 or
+                any(ord(char) < 32 or ord(char) > 126 for char in password) or
+                password != request.get('enrollment_confirm')):
+            raise ValueError('Enrollment passwords must match and contain 1–16 printable ASCII characters.')
+        environment = dict(os.environ, LC_ALL='C')
+        status = subprocess.run(['mokutil', '--test-key', str(CERTIFICATE)], capture_output=True,
+                                text=True, env=environment)
+        response = status.stdout + status.stderr
+        if any(message in response for message in (' is already enrolled', ' is already in db',
+                                                   ' is already in the built-in trusted keyring')):
+            print('The dcore certificate is already enrolled.')
+            return
+        if ' is already in the enrollment request' in response:
+            print('Enrollment is already pending; reboot and confirm in MokManager.')
+            return
+        if status.returncode not in (0, 1) or ' is not enrolled' not in response:
+            raise ValueError('Cannot request enrollment: ' + (response.strip() or 'unknown firmware status'))
+        hashed = subprocess.run(['openssl', 'passwd', '-6', '-stdin'], input=password.encode()+b'\n',
+                                capture_output=True, check=True).stdout
+        if not hashed.startswith(b'$6$') or len(hashed) > 256:
+            raise ValueError('Cannot generate enrollment password hash.')
+        descriptor = os.memfd_create('dcore-mok-password', os.MFD_CLOEXEC)
+        try:
+            os.write(descriptor, hashed)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            run('mokutil', '--import', str(CERTIFICATE), '--hash-file', f'/proc/self/fd/{descriptor}',
+                pass_fds=(descriptor,), env=environment)
+        finally:
+            os.close(descriptor)
+        print('Enrollment requested. Reboot and confirm the dcore certificate in MokManager.')
+
+    def reboot(self):
+        layout = self.read('layout.json') or {}
+        if not getattr(self, 'live', False) or not all(layout.get(flag) is True for flag in ('deployed', 'configured', 'verified', 'clean')):
+            raise ValueError('Reboot is available only after a completed live ISO installation.')
+        run('systemctl', 'reboot')
+
+
+def bind_web(uid):
+    directory = Path(f'/run/user/{uid}/dcore-installer')
+    for path in (directory.parent, directory):
+        info = path.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or info.st_mode & 0o077:
+            raise ValueError('The web listener directory must be private and owned by the caller.')
+    address = directory/'listener.sock'
+    info = address.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != uid:
+        raise ValueError('Invalid installer listener socket.')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+        peer.settimeout(10)
+        peer.connect(str(address))
+        _, owner, _ = struct.unpack('3i', peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i')))
+        if owner != uid:
+            raise ValueError('Web listener peer identity does not match the caller.')
+        try:
+            listener = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            listener.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            address = ('::', 80)
+        except OSError:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            address = ('0.0.0.0', 80)
+        with listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(address)
+            listener.listen(128)
+            peer.sendmsg([b'dcore-http'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [listener.fileno()]))])
+
 
 def main():
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('source', 'disks', 'status', 'settings', 'load',
-                                            'validate', 'install', 'configure', 'verify', 'cleanup'))
+                                            'validate', 'install', 'configure', 'verify', 'cleanup',
+                                            'bind-web', 'enroll', 'reboot'))
+    parser.add_argument('--live', action='store_true')
     args = parser.parse_args()
     uid = os.environ.get('SUDO_UID', '')
-    if os.geteuid() != 0 or not uid.isdecimal() or int(uid) <= 0:
+    if os.geteuid() != 0 or (not args.live and (not uid.isdecimal() or int(uid) <= 0)):
         raise ValueError('Launch the installer directly as an ordinary user through djust install.')
+    if args.live and (uid or not (MEDIUM/'dcore/installer.json').is_file()):
+        raise ValueError('Live mode is available only on the booted installer ISO.')
     os.environ['PATH'] = '/usr/sbin:/usr/bin:/sbin:/bin'
-    backend = Backend(int(uid))
+    if args.operation == 'bind-web':
+        if args.live:
+            raise ValueError('Live mode binds its listener directly.')
+        bind_web(int(uid))
+        return
+    backend = Backend(0 if args.live else int(uid), live=args.live)
     if args.operation in ('source', 'status', 'disks'):
         if args.operation == 'source':
             result = backend.source()
         elif args.operation == 'status':
             result = {'layout': backend.read('layout.json'), 'settings': backend.read('settings.json')}
         else:
-            result = backend.checks.eligible_disks(backend.checker, set())
+            result = backend.checks.eligible_disks(backend.checker, backend.checks.media_devices() if args.live else set())
         print(json.dumps(result))
         return
-    fd = os.open(STATE_ROOT/'operation.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    fd = os.open((LIVE_ROOT if args.live else STATE_ROOT)/'operation.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -240,6 +348,10 @@ def main():
             raise ValueError('Invalid installer request.') from None
         if args.operation == 'settings':
             backend.settings(request)
+        elif args.operation == 'enroll':
+            backend.enroll(request)
+        elif args.operation == 'reboot':
+            backend.reboot()
         else:
             backend.phase(args.operation, request)
     finally:

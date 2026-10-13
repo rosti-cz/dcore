@@ -1,0 +1,20 @@
+[Unit]
+Description=First-boot DHCP configuration for the first connected Ethernet port
+Wants=systemd-networkd.service systemd-resolved.service
+After=systemd-networkd.service systemd-udev-trigger.service
+ConditionPathExists=!/var/lib/dcore/network-bootstrap.done
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/dcore/network-bootstrap
+Restart=no
+StateDirectory=dcore
+UMask=0022
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/systemd/network /var/lib/dcore
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

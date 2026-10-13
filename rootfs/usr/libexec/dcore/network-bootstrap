@@ -1,0 +1,102 @@
+#!/usr/bin/python3
+"""One first-boot decision: preserve host networking or configure one wired port."""
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import time
+
+NETWORK = Path('/etc/systemd/network')
+STATE = Path('/var/lib/dcore/network-bootstrap.done')
+NET = Path('/sys/class/net')
+
+
+def configured(directory, exclude=None):
+    # Include masks, dangling symlinks and drop-in directories. Even an unknown
+    # local file means an administrator has taken ownership of networking.
+    return directory.exists() and any(path != exclude for path in directory.iterdir())
+
+
+def interfaces(directory):
+    for link in sorted(directory.iterdir(), key=lambda p: p.name):
+        try:
+            if not (link / 'device').exists() or (link / 'wireless').exists():
+                continue
+            if (link / 'type').read_text().strip() != '1':
+                continue
+            mac = (link / 'address').read_text().strip().lower()
+            # Hardware-assigned addresses provide a stable match across renames.
+            if (link / 'addr_assign_type').read_text().strip() != '0':
+                continue
+            if not re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', mac) or mac == '00:00:00:00:00:00':
+                continue
+            yield link, mac
+        except OSError:
+            continue  # Hotplug devices may disappear during discovery.
+
+
+def connected(link):
+    try:
+        return (link / 'carrier').read_text().strip() == '1'
+    except OSError:
+        return False
+
+
+def configuration(mac):
+    return (f'# Created by dcore on its first boot. Edit this file for custom networking.\n'
+            f'[Match]\nMACAddress={mac}\nType=ether\n\n'
+            '[Link]\nRequiredForOnline=no\n\n'
+            '[Network]\nDHCP=yes\nIPv6AcceptRA=yes\n\n'
+            '[DHCPv4]\nUseDNS=yes\nUseDomains=yes\n\n'
+            '[DHCPv6]\nUseDNS=yes\nUseDomains=yes\n\n'
+            '[IPv6AcceptRA]\nUseDNS=yes\nUseDomains=yes\n')
+
+
+def bootstrap(network=NETWORK, state=STATE, net=NET, run=subprocess.run, sleep=time.sleep):
+    network.mkdir(parents=True, exist_ok=True)
+    state.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # Claim the decision before waiting: rebooting without a connected cable
+        # must not turn this into a recurring network configuration service.
+        with state.open('x') as marker:
+            marker.write('First-boot network discovery started; automatic configuration will not run again.\n')
+            marker.flush()
+            os.fsync(marker.fileno())
+    except FileExistsError:
+        return
+    raised = set()
+    while not configured(network):
+        candidates = list(interfaces(net))
+        for link, _ in candidates:
+            if link.name not in raised:
+                result = run(['/usr/sbin/ip', 'link', 'set', 'dev', link.name, 'up'], check=False)
+                if result.returncode == 0:
+                    raised.add(link.name)
+        for link, mac in candidates:
+            if not connected(link):
+                continue
+            fd, temporary = tempfile.mkstemp(prefix='.dcore-network-', dir=network)
+            try:
+                with os.fdopen(fd, 'w') as output:
+                    output.write(configuration(mac))
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.chmod(temporary, 0o644)
+                if configured(network, exclude=Path(temporary)):
+                    return
+                # Hard-link publishes a complete file without overwriting a
+                # concurrently-created configuration with the same filename.
+                os.link(temporary, network / '10-dcore-dhcp.network')
+            finally:
+                os.unlink(temporary)
+            run(['/usr/bin/networkctl', 'reload'], check=True)
+            run(['/usr/bin/networkctl', 'reconfigure', link.name], check=True)
+            print(f'DHCP configured for {link.name} ({mac}).', flush=True)
+            return
+        sleep(2)
+    print('Existing /etc/systemd/network configuration preserved; bootstrap permanently skipped.', flush=True)
+
+
+if __name__ == '__main__':
+    bootstrap()

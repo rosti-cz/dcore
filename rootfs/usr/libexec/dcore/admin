@@ -12,7 +12,7 @@ import subprocess
 import sys
 import types
 
-COMMANDS = ('change-luks-password', 'enroll-tpm', 'enroll-secureboot', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus', 'switch-locale', 'set-timezone')
+COMMANDS = ('change-luks-password', 'enroll-tpm', 'enroll-secureboot', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus', 'switch-locale', 'set-timezone', 'set-hostname')
 INSTALLER = Path('/usr/libexec/dcore/install/block_install')
 # Preserve the original filename for existing host configurations.
 TIMER_DROPIN = Path('/etc/systemd/system/dcore-update.timer.d/20-ujust.conf')
@@ -96,6 +96,20 @@ def set_timezone():
         return
     run('timedatectl', 'set-timezone', selected, privileged=True)
     print(f'System timezone set to {selected}.')
+
+
+def set_hostname():
+    tty()
+    selected = input('New hostname (Enter to cancel): ').strip()
+    if not selected:
+        print('Cancelled; no changes made.')
+        return
+    # Explicit validation avoids hostnamectl silently simplifying a pretty name.
+    if len(selected) > 64 or not all(re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?',
+                                                label) for label in selected.split('.')):
+        raise ValueError('Use a hostname of at most 64 characters, with letters, digits, dots and internal hyphens; no changes made.')
+    run('hostnamectl', 'set-hostname', selected.lower(), privileged=True)
+    print(f'System hostname set to {selected.lower()}.')
 
 
 def enroll_secureboot():
@@ -251,7 +265,7 @@ def install(interface='tui'):
         return install_plain()
     if interface != 'tui':
         raise ValueError('Choose tui or plain installer interface.')
-    os.execv('/usr/bin/python3', ['/usr/bin/python3', '/usr/libexec/dcore/installer/installer.py', '--host'])
+    os.execv('/usr/libexec/dcore/installer/dcore-installer', ['/usr/libexec/dcore/installer/dcore-installer', '--host'])
 
 
 def install_plain():

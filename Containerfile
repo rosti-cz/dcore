@@ -22,6 +22,13 @@ WORKDIR /home/build
 RUN --mount=type=bind,source=shared/build.sh,target=/build-bootc.sh \
     . "${CARGO_HOME}/env" && /build-bootc.sh
 
+FROM docker.io/library/golang:1.26.9-trixie AS installer-builder
+WORKDIR /build
+COPY installer/go.mod installer/go.sum ./
+RUN go mod download
+COPY installer/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /dcore-installer .
+
 FROM base AS system
 ARG DEBIAN_RELEASE
 ARG INCUS_CHANNEL=stable
@@ -40,7 +47,8 @@ RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     /install-system.sh && /install-homebrew.sh
 COPY scripts/block_install /usr/libexec/dcore/install/block_install
 COPY scripts/lib/ /usr/libexec/dcore/install/lib/
-COPY scripts/iso/*.py /usr/libexec/dcore/installer/
+COPY scripts/iso/host-backend.py scripts/iso/checks.py /usr/libexec/dcore/installer/
+COPY --from=installer-builder /dcore-installer /usr/libexec/dcore/installer/dcore-installer
 # Install the source-built boot stack after APT so Debian packages cannot overwrite it.
 COPY --from=builder /output/ /
 RUN ldconfig

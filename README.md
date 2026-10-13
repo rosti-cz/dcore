@@ -79,7 +79,7 @@ Release downloads are checked against upstream SHA-256 checksums.
 - Package management: Homebrew, owned by the `core` user in persistent storage.
 - Switching: Debian Open vSwitch (`openvswitch-switch`,
   `openvswitch-common`).
-- System: bootc, OSTree, sudo, OpenSSH server, netplan, systemd-resolved,
+- System: bootc, OSTree, sudo, OpenSSH server, systemd-networkd, systemd-resolved,
   systemd-timesyncd (enabled), fstrim timer (enabled).
 - Storage: SMART diagnostics and monitoring (`smartmontools`, `smartctl`, `smartd`), Debian ZFS (`zfsutils-linux`, `zfs-zed`, `zfs-dracut`, and
   `zfs-dkms` compiled for the image kernel), parted, `btrfs-progs` (`btrfs`), ext4, XFS and FAT utilities, cryptsetup and systemd-cryptsetup.
@@ -111,6 +111,7 @@ OS line through a system-wide default configuration.
 | `djust enable-incus` | Enable the Incus server and add core to incus-admin, or offer to disable it when already enabled/running. |
 | `djust switch-locale` | Search available locales with fzf and apply the selection system-wide; log in again to use it. |
 | `djust set-timezone` | Search available timezones with fzf and apply the selection immediately. |
+| `djust set-hostname` | Enter and apply a new system hostname; Enter cancels without changes. |
 
 The image includes precompiled Debian locales for use with immutable `/usr`.
 In either picker, type to search, use arrow keys to choose, and press Enter to
@@ -118,7 +119,7 @@ apply. Esc cancels without changing the system configuration. Switching locale
 sets the system's `LANG`; existing locale category settings and user-specific
 preferences can still override it. Existing services may need restarting to use it.
 
-The same Textual installer is included in both dcore and the offline ISO.
+The same Go installer, built with Bubble Tea, is included in both dcore and the offline ISO.
 `djust install` runs its interface as the ordinary caller and elevates individual
 backend operations through sudo. It excludes the running system's mounted,
 swap and mapped disks and requires an exact `ERASE /dev/DEVICE` confirmation.
@@ -308,8 +309,19 @@ This creates a bootable OCI image. Use a bootc-compatible
 installer/provisioning flow to install it, supply an administrator account and
 SSH authorized key, and choose a persistent registry tag as the image source.
 Password SSH login is disabled by default; password-provisioned installations
-enable it for core. Default networking uses DHCP on `en*` and `eth*`.
-Replace `/etc/netplan/90-default.yaml` if your host needs static addressing.
+enable it for core. On the first boot, `dcore-network-bootstrap.service` waits
+in the background for a connected physical Ethernet port and configures DHCP
+on the first port in interface-name order. The configuration matches its
+hardware-assigned MAC address, so interface renames do not change the chosen
+port. IPv4/IPv6 DHCP, router advertisements and DNS are enabled.
+
+Edit `/etc/systemd/network/10-dcore-dhcp.network` for static addressing or other
+custom networking. Any existing entry in `/etc/systemd/network`, including masks
+and drop-ins, permanently skips automatic setup. Discovery never blocks startup
+and runs only during the first boot; if the machine reboots before a cable is
+connected, configure networking manually. Its persistent decision is recorded
+in `/var/lib/dcore/network-bootstrap.done`. The installer ISO uses the same
+first-connected-port setup. Netplan is no longer included.
 
 ## Offline installer ISO
 
@@ -330,8 +342,9 @@ its minimum RAM requirement. Podman temporary image files share the dedicated
 RAM filesystem with its image store, instead of filling the live `/var/tmp`
 overlay. An approximately 800 MiB VM cannot stage this image.
 
-The Python Textual interface lists eligible whole drives with size, model and serial.
-Use the keyboard or mouse to select options, review the installation, inspect
+The Go Bubble Tea interface lists eligible whole drives with size, model and serial.
+Use Tab to select fields, arrows to change choices, and Enter to activate controls.
+Review the installation, inspect
 logs, retry a failed step, or open a rescue shell.
 Select **ext4** (default), **Btrfs**, or **XFS**, then choose an unencrypted root
 (default) or **LUKS2 encryption**. All three filesystems support both modes.
@@ -372,10 +385,20 @@ or logs. A reboot of the live environment loses these checkpoints. Reboot is
 available after all installation stages succeed. **Rescue shell** is available
 while no installation operation is running.
 
-For terminals that cannot run Textual, invoke
-`/usr/libexec/dcore/iso-installer --plain` from a live rescue shell. This fallback
-uses the original prompts and does not provide the progress screen's recovery
-controls.
+The installer serves an embedded web interface on **port 80** while it runs.
+Its terminal screen prints reachable IP addresses and a randomly generated
+**six-digit PIN**, including leading zeros. Open the displayed URL and enter the
+PIN to use the same inputs, erase confirmation, progress, retries and logs.
+Both interfaces share one session; concurrent starts are rejected and settings
+are locked after deployment. The browser interface works offline. A new process
+generates a new PIN; sessions expire after two hours. PIN attempts are rate limited
+and authenticated changes require CSRF protection.
+
+**Use HTTP on a trusted management network:** it does not encrypt passwords in
+transit. The terminal remains usable if port 80 is occupied. The rescue shell is
+local. Secure Boot enrollment accepts a temporary password in either interface;
+confirmation still happens in MokManager after reboot. Only the completed live ISO
+installation offers reboot; host installation does not reboot the server.
 
 To build an ISO locally, use an amd64 Linux host with root, Podman, gzip and
 Python3. The build needs network access for the Debian live environment, even
@@ -1128,7 +1151,22 @@ changes preserving the TPM token, and recovery with the new password after
 clearing the TPM. The simulated measurement exists only in the test fixture;
 physical TPM/firmware behavior remains unverified.
 
-Textual installer validation passed the recovery and headless interface tests
+The Go Bubble Tea installer passed race-enabled session, recovery and web
+security tests with Go 1.26.9. A Secure Boot ISO exposed its six-digit PIN web
+interface after native DHCP setup. Chromium installed encrypted Btrfs through
+that interface, completed every phase, and requested MOK enrollment. The resulting
+disk booted independently without the ISO; the chosen LUKS passphrase unlocked it
+and the chosen core password worked over SSH. Native networkd DHCP, the `dcore`
+hostname, and `djust set-hostname` were checked on the running VM. The current Go
+binary restored the saved completed frontend checkpoint with representative
+backend layout metadata in an isolated container, preserving its locked settings
+and rejecting another deployment. Host-mode VM checks covered ordinary-user TUI
+launch, port-80 descriptor handoff, PIN authentication, CSRF protection, mounted
+drive exclusion and host reboot refusal. Enrolled Secure Boot VM checks accepted
+signed ZFS modules and rejected an unsigned replacement. These test images reused
+a cached bootc base; bare-metal testing remains outstanding.
+
+The previous Textual installer validation passed the recovery and headless interface tests
 with Textual 2.1.2. Disposable ext4 and encrypted XFS disks survived an injected
 account-setup failure and retry, then booted with password SSH access, sudo,
 Fish and Fastfetch. An offline ISO installed encrypted Btrfs in a UEFI VM with

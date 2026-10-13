@@ -36,14 +36,20 @@ jobs:
           python3 tests/test-secureboot.py
       - name: Test offline image RAM staging
         run: sudo python3 tests/test-image-staging.py
-      - name: Test installer recovery and Textual interface
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.26.9
+          cache-dependency-path: installer/go.sum
+      - name: Test Go installer, web authentication, and recovery
+        run: |
+          cd installer
+          go test -race ./...
+          go vet ./...
+      - name: Test privileged installer and first-boot networking
         run: |
           python3 tests/test-host-installer.py
-          python3 tests/test-installer-session.py
           python3 tests/test-finish-install.py
-          python3 -m venv /tmp/dcore-textual-tests
-          /tmp/dcore-textual-tests/bin/pip install 'textual==2.1.2'
-          /tmp/dcore-textual-tests/bin/python tests/test-installer-interface.py
+          python3 tests/test-network-bootstrap.py
       - id: config
         name: Read Debian release configuration
         run: |
@@ -124,7 +130,7 @@ jobs:
           sudo modprobe loop
           sudo modprobe btrfs
           sudo modprobe dm_crypt
-          sudo python3 tests/test-secureboot-vm.py --image "$IMAGE:$DEBIAN_RELEASE" --filesystem btrfs --encrypt
+          sudo python3 tests/test-secureboot-vm.py --image "$IMAGE:$DEBIAN_RELEASE" --filesystem btrfs --encrypt --check-installer
       - name: Test root partition and filesystem growth
         run: |
           sudo modprobe loop

@@ -24,7 +24,7 @@ lb config --mode debian --distribution "$DEBIAN_RELEASE" --architecture amd64 \
     --chroot-squashfs-compression-type xz \
     --archive-areas 'main contrib non-free-firmware' --apt-recommends false \
     --firmware-chroot false --uefi-secure-boot enable \
-    --bootappend-live 'boot=live components' --iso-volume DCORE_INSTALL
+    --bootappend-live 'boot=live components ip=none' --iso-volume DCORE_INSTALL
 mkdir -p config/package-lists config/includes.binary/dcore \
     config/includes.chroot/usr/libexec/dcore/install \
     config/includes.chroot/etc/containers \
@@ -43,7 +43,7 @@ live-config-systemd
 systemd-sysv
 podman
 python3
-python3-textual
+systemd-resolved
 openssh-client
 util-linux
 kmod
@@ -74,14 +74,22 @@ cp /work/payload/* config/includes.binary/dcore/
 cp /source/block_install config/includes.chroot/usr/libexec/dcore/install/
 cp -r /source/lib config/includes.chroot/usr/libexec/dcore/install/
 mkdir -p config/includes.chroot/usr/libexec/dcore/installer
-install -m 0755 /source/iso/installer.py /source/iso/session.py /source/iso/interface.py \
+install -m 0755 /source/iso/dcore-installer /source/iso/host-backend.py /source/iso/checks.py \
     config/includes.chroot/usr/libexec/dcore/installer/
+mkdir -p config/includes.chroot/etc/systemd/network
+install -m 0755 /source/iso/network-bootstrap config/includes.chroot/usr/libexec/dcore/
+install -m 0644 /source/iso/dcore-network-bootstrap.service config/includes.chroot/etc/systemd/system/
+ln -s ../dcore-network-bootstrap.service config/includes.chroot/etc/systemd/system/multi-user.target.wants/dcore-network-bootstrap.service
+for unit in systemd-networkd.service systemd-resolved.service; do
+    ln -s /usr/lib/systemd/system/$unit config/includes.chroot/etc/systemd/system/multi-user.target.wants/$unit
+done
+ln -sfn /run/systemd/resolve/stub-resolv.conf config/includes.chroot/etc/resolv.conf
 cat > config/includes.chroot/usr/libexec/dcore/iso-installer <<'LAUNCHER'
 #!/bin/sh
 set -eu
 install -d -m 0700 /var/lib/containers/image-tmp
 export TMPDIR=/var/lib/containers/image-tmp
-exec /usr/bin/python3 /usr/libexec/dcore/installer/installer.py "$@"
+exec /usr/libexec/dcore/installer/dcore-installer "$@"
 LAUNCHER
 chmod 0755 config/includes.chroot/usr/libexec/dcore/iso-installer
 cat > config/includes.chroot/etc/systemd/system/var-lib-containers.mount <<'UNIT'

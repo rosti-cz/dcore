@@ -16,7 +16,7 @@ enroll-secureboot:
 upgrade component="all":
     @/usr/libexec/dcore/admin upgrade --component {{quote(component)}}
 
-# Install dcore onto an unused disk with the shared wizard; 'plain' uses key-based prompts.
+# Install with the shared Go terminal/web wizard; 'plain' uses key-based prompts.
 install interface="tui":
     @/usr/libexec/dcore/admin install --interface {{quote(interface)}}
 
@@ -39,6 +39,10 @@ switch-locale:
 # Select and apply the system timezone with fzf.
 set-timezone:
     @/usr/libexec/dcore/admin set-timezone
+
+# Set the system hostname; Enter cancels without changes.
+set-hostname:
+    @/usr/libexec/dcore/admin set-hostname
 
 # Change the root LUKS2 password while preserving TPM enrollment.
 change-luks-password:

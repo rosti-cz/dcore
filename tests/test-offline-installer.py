@@ -25,7 +25,7 @@ def load(name, path):
 
 
 password = load('password', ROOT / 'scripts/lib/install-password.py')
-installer = load('iso_installer', ROOT / 'scripts/iso/installer.py')
+installer = load('iso_installer', ROOT / 'scripts/iso/checks.py')
 
 
 class ResourceChecks(unittest.TestCase):
@@ -177,89 +177,6 @@ class OfflineInstaller(unittest.TestCase):
              mock.patch.object(installer.Path, 'is_block_device', return_value=True):
             self.assertEqual(installer.media_devices(), {'/dev/sda1', '/dev/sda'})
 
-    def run_console(self, identity=None, confirmation='ERASE /dev/test', passwords=None,
-                    filesystem='ext4', encrypt=False, fs_choice=None, encryption_choice=None):
-        disk = dict(name='/dev/test', size=20 * 1024**3)
-        checker = mock.Mock()
-        checker.check.return_value = identity or {'diskseq': 1}
-        with tempfile.TemporaryDirectory() as work:
-            medium = Path(work)
-            (medium / 'dcore').mkdir()
-            (medium / 'dcore/installer.json').write_text(json.dumps(dict(
-                release='test', debian_release='trixie', local_image='localhost/dcore:test',
-                tracking_image='ghcr.io/rosti-cz/dcore:trixie')))
-            with mock.patch.object(installer, 'MEDIUM', medium), \
-                 mock.patch.object(installer.Path, 'is_dir', return_value=True), \
-                 mock.patch.object(installer, 'module', side_effect=[checker, password]), \
-                 mock.patch.object(installer, 'media_devices', return_value={'/dev/media'}), \
-                 mock.patch.object(installer, 'eligible_disks', return_value=[(disk, {'diskseq': 1})]), \
-                 mock.patch.object(installer, 'check_encryption_support'), \
-                 mock.patch.object(installer, 'check_resources'), \
-                 mock.patch.object(installer.getpass, 'getpass',
-                     side_effect=passwords or (['test-password'] * 2 + (['test-disk-passphrase'] * 2 if encrypt else []))), \
-                 mock.patch('builtins.input', side_effect=['1', fs_choice if fs_choice is not None else str(('ext4', 'btrfs', 'xfs').index(filesystem) + 1),
-                     encryption_choice if encryption_choice is not None else ('2' if encrypt else '1'), confirmation, '']), \
-                 mock.patch.object(installer.subprocess, 'run') as run:
-                try:
-                    installer.install()
-                except ValueError as error:
-                    return run.call_args_list, error
-                return run.call_args_list, None
-
-    def test_console_offline_dispatch(self):
-        calls, error = self.run_console()
-        self.assertIsNone(error)
-        self.assertEqual(calls[0].args[0][:2], ['podman', 'load'])
-        command = calls[1].args[0]
-        self.assertIn('--local', command)
-        self.assertIn('--core-password-stdin', command)
-        self.assertEqual(calls[1].kwargs['input'], b'test-password')
-        self.assertNotIn('test-password', str(command))
-        self.assertEqual(calls[2], mock.call(['/usr/libexec/dcore/enroll-secureboot'], check=False))
-        self.assertEqual(len(calls), 3)  # No reboot unless explicitly requested.
-
-    def test_all_filesystems_with_and_without_encryption(self):
-        for filesystem in ('ext4', 'btrfs', 'xfs'):
-            for encrypt in (False, True):
-                with self.subTest(filesystem=filesystem, encrypt=encrypt):
-                    calls, error = self.run_console(filesystem=filesystem, encrypt=encrypt)
-                    self.assertIsNone(error)
-                    command = calls[1].args[0]
-                    self.assertEqual(command[command.index('--filesystem') + 1], filesystem)
-                    self.assertEqual('--encrypt' in command, encrypt)
-                    if encrypt:
-                        core, luks = password.read_credentials(io.BytesIO(calls[1].kwargs['input']))
-                        self.assertEqual((core, luks), (b'test-password', b'test-disk-passphrase'))
-                    else:
-                        self.assertEqual(calls[1].kwargs['input'], b'test-password')
-                    self.assertNotIn('test-password', str(command))
-                    self.assertNotIn('test-disk-passphrase', str(command))
-
-    def test_invalid_and_cancelled_choices_never_install(self):
-        for choice in ('9', 'zfs', 'q'):
-            calls, error = self.run_console(fs_choice=choice)
-            self.assertEqual(calls, [])
-            if choice != 'q':
-                self.assertIsInstance(error, ValueError)
-        calls, error = self.run_console(encryption_choice='q')
-        self.assertEqual(calls, [])
-        self.assertIsNone(error)
-        calls, error = self.run_console(encryption_choice='3')
-        self.assertEqual(calls, [])
-        self.assertIsInstance(error, ValueError)
-
-    def test_default_choices(self):
-        calls, error = self.run_console(fs_choice='', encryption_choice='')
-        self.assertIsNone(error)
-        command = calls[1].args[0]
-        self.assertEqual(command[command.index('--filesystem') + 1], 'ext4')
-        self.assertNotIn('--encrypt', command)
-
-    def test_encryption_passphrase_mismatch_never_loads_or_installs(self):
-        calls, error = self.run_console(encrypt=True, passwords=['core', 'core', 'disk-one', 'disk-two'])
-        self.assertRegex(str(error), 'Disk passphrases do not match')
-        self.assertEqual(calls, [])
-
     def test_missing_live_encryption_driver_is_reported(self):
         with mock.patch.object(installer.shutil, 'which', return_value='/usr/bin/tool'), \
              mock.patch.object(installer.Path, 'is_file', return_value=True), \
@@ -297,21 +214,6 @@ class OfflineInstaller(unittest.TestCase):
                 with self.assertRaises(ValueError) as raised:
                     password.read_credentials(io.BytesIO(raw))
                 self.assertNotIn('secret', str(raised.exception))
-
-    def test_replaced_disk_never_reaches_block_installer(self):
-        calls, error = self.run_console(identity={'diskseq': 2})
-        self.assertRegex(str(error), 'Destination changed')
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0].args[0][:2], ['podman', 'load'])
-
-    def test_password_mismatch_and_erasure_refusal_do_not_load_or_install(self):
-        calls, error = self.run_console(passwords=['one', 'two'])
-        self.assertRegex(str(error), 'Passwords do not match')
-        self.assertEqual(calls, [])
-        calls, error = self.run_console(confirmation='no')
-        self.assertIsNone(error)
-        self.assertEqual(calls, [])
-
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

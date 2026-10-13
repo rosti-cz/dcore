@@ -13,7 +13,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('iso_checks', ROOT / 'scripts/iso/installer.py')
+spec = importlib.util.spec_from_file_location('iso_checks', ROOT / 'scripts/iso/checks.py')
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 

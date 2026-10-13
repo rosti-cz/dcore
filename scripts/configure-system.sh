@@ -10,15 +10,14 @@ systemctl enable systemd-boot-update.service
 # login defaults as well as the sysusers definition used for core provisioning.
 usermod --shell /usr/bin/fish root
 usermod --shell /usr/bin/fish core
-systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh fstrim.timer dcore-grow-root.service dcore-homebrew.service
+systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh fstrim.timer dcore-grow-root.service dcore-homebrew.service dcore-network-bootstrap.service
 # Disable all competing image/APT update schedules, including upstream defaults.
 for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updates.timer apt-daily.timer apt-daily-upgrade.timer; do
     if [[ -f "/usr/lib/systemd/system/$unit" ]]; then systemctl --root=/ disable "$unit"; fi
 done
 # Kernel modules are built in CI; DKMS cannot rebuild an immutable /usr at boot.
 systemctl mask dkms.service
-install -d -m 0755 /etc/netplan /etc/ssh/sshd_config.d
-install -m 0600 /usr/share/dcore/default-network.yaml /etc/netplan/90-default.yaml
+install -d -m 0755 /etc/systemd/network /etc/ssh/sshd_config.d
 printf 'PasswordAuthentication no\n' > /etc/ssh/sshd_config.d/10-dcore.conf
 # The key is unique to each installed server and must not be baked into an image.
 rm -f /etc/ssh/ssh_host_*
@@ -85,8 +84,8 @@ visudo --check
 # Switching is available for explicit configuration by the administrator.
 systemctl --root=/ disable openvswitch-switch.service
 
-# /var is empty on initial boot. Netplan's cleanup may activate this static DB
-# unit even with the switching service disabled; ensure its symlink target exists.
+# /var is empty on initial boot; ensure the static OVS DB unit's target exists
+# when an administrator enables switching.
 install -d /usr/lib/systemd/system/ovsdb-server.service.d
 printf 'd /var/lib/openvswitch 0755 root root -\nd /var/log/openvswitch 0755 root root -\n' > /usr/lib/tmpfiles.d/dcore-openvswitch.conf
 printf '[Unit]\nAfter=systemd-tmpfiles-setup.service\n' > /usr/lib/systemd/system/ovsdb-server.service.d/10-persistent-state.conf

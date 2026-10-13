@@ -25,6 +25,11 @@ podman tag "$source_image" "$local_image"
 mkdir -p "$work_dir/payload"
 cp -r "$repo_dir/scripts" "$work_dir/source"
 cp "$repo_dir/rootfs/usr/libexec/dcore/enroll-secureboot" "$work_dir/source/iso/enroll-secureboot"
+cp "$repo_dir/rootfs/usr/libexec/dcore/network-bootstrap" "$work_dir/source/iso/network-bootstrap"
+cp "$repo_dir/rootfs/usr/lib/systemd/system/dcore-network-bootstrap.service" "$work_dir/source/iso/dcore-network-bootstrap.service"
+# Use the exact Go installer binary shipped in the release image.
+podman run --rm "$local_image" cat /usr/libexec/dcore/installer/dcore-installer > "$work_dir/source/iso/dcore-installer"
+chmod 0755 "$work_dir/source/iso/dcore-installer"
 podman run --rm "$local_image" cat /usr/share/dcore/secureboot/dcore.der > "$work_dir/payload/dcore.der"
 podman run --rm "$local_image" cat /usr/share/dcore/secureboot/status.json > "$work_dir/payload/secureboot-status.json"
 # Preserve the manifest digest so installed hosts can fetch this exact version later.
