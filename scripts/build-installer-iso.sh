@@ -32,8 +32,14 @@ podman run --rm "$local_image" cat /usr/libexec/dcore/installer/dcore-installer 
 chmod 0755 "$work_dir/source/iso/dcore-installer"
 podman run --rm "$local_image" cat /usr/share/dcore/secureboot/dcore.der > "$work_dir/payload/dcore.der"
 podman run --rm "$local_image" cat /usr/share/dcore/secureboot/status.json > "$work_dir/payload/secureboot-status.json"
-# Preserve the manifest digest so installed hosts can fetch this exact version later.
-podman save --format oci-archive --uncompressed "$local_image" | gzip -6 > "$work_dir/payload/image.oci.tar.gz"
+# Registry layers are compressed: an uncompressed Podman export rewrites their
+# digests and the manifest. Copy the pinned registry manifest and blobs verbatim.
+# Use the image's Skopeo so the host needs no extra export tools.
+podman run --rm --security-opt label=disable \
+    -v "$work_dir/payload:/payload" "$local_image" \
+    skopeo --tmpdir /payload copy --preserve-digests "docker://$source_image" \
+    "oci-archive:/payload/image.oci.tar:$local_image"
+gzip -6 "$work_dir/payload/image.oci.tar"
 image_size=$(podman image inspect "$local_image" --format '{{.Size}}')
 python3 - "$work_dir/payload/installer.json" "$source_image" "$tracking_image" "$local_image" "$release_tag" "$debian_release" "$image_size" <<'PY'
 import json, sys, tarfile
