@@ -89,7 +89,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			switch key.String() {
 			case "esc":
 				m.review = nil
-			case "tab", "shift+tab", "left", "right":
+			case "tab", "shift+tab", "left", "right", "up", "down":
 				m.confirmErase = !m.confirmErase
 			case "enter":
 				if !m.confirmErase {
@@ -182,9 +182,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
-		case "tab", "shift+tab":
+		case "tab", "shift+tab", "up", "down":
 			delta := 1
-			if msg.String() == "shift+tab" {
+			if msg.String() == "shift+tab" || msg.String() == "up" {
 				delta = -1
 			}
 			m.focus = (m.focus + delta + 13) % 13
@@ -195,10 +195,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.inputs[m.focus-3].Focus()
 			}
 			return m, nil
-		case "left", "right", "up", "down":
+		case "left", "right":
 			if m.focus < 3 && !contains(s.Completed, "install") && s.Running == "" {
 				delta := 1
-				if msg.String() == "left" || msg.String() == "up" {
+				if msg.String() == "left" {
 					delta = -1
 				}
 				switch m.focus {
@@ -211,6 +211,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				case 2:
 					m.encrypt = !m.encrypt
 				}
+				return m, nil
+			}
+		case " ":
+			if m.focus == 2 && !contains(s.Completed, "install") && s.Running == "" {
+				m.encrypt = !m.encrypt
 				return m, nil
 			}
 		case "enter":
@@ -307,7 +312,7 @@ func (m model) View() string {
 				preview = partitionPreview(d.Children, "  ")
 			}
 		}
-		return fmt.Sprintf("Review installation: %s — %s (encryption: %t)\n\n%s\nAll data on the selected drive will be permanently erased during deployment.\nCompleted phases are preserved when retrying.\n\n%s   %s\n\nTab/Left/Right selects • Enter activates • Esc cancels\n", input.Device, input.Filesystem, input.Encrypt, preview, cancel, confirm)
+		return fmt.Sprintf("Review installation: %s — %s (encryption: %t)\n\n%s\nAll data on the selected drive will be permanently erased during deployment.\nCompleted phases are preserved when retrying.\n\n%s   %s\n\nTab/arrows select • Enter activates • Esc cancels\n", input.Device, input.Filesystem, input.Encrypt, preview, cancel, confirm)
 	}
 	if m.logs {
 		return "dcore installation log — Esc returns\n\n" + m.viewport.View() + "\nUp/Down and PgUp/PgDown scroll; Home/End select the ends.\n"
@@ -331,6 +336,7 @@ func (m model) View() string {
 		}
 		b.WriteString("   PIN: " + m.web.PIN() + "\n")
 	}
+	b.WriteString("Tab or Up/Down: select field • Left/Right: change choice • Space: toggle encryption\n")
 	b.WriteString("Selected drive will be erased. Web access uses HTTP on a trusted network.\n\n")
 	device := "No eligible disks"
 	if len(m.disks) > 0 {
@@ -390,6 +396,6 @@ func (m model) View() string {
 	if n > 0 {
 		b.WriteString(strings.Join(s.Logs[len(s.Logs)-n:], "\n") + "\n")
 	}
-	b.WriteString("Tab selects fields • arrows change choices • Enter activates • Ctrl+C exits when idle\n")
+	b.WriteString("Tab/Up/Down select fields • Left/Right change choices • Enter activates • Ctrl+C exits when idle\n")
 	return b.String()
 }

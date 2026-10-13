@@ -95,3 +95,38 @@ func TestTerminalPartitionPreviewChangesWithSelectedDrive(t *testing.T) {
 		t.Fatal(text)
 	}
 }
+
+func TestTerminalArrowNavigationAndSpaceToggle(t *testing.T) {
+	e := testEngine(t, &fakeBackend{})
+	m, err := newModel(e, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	press := func(key tea.KeyType) { changed, _ := m.Update(tea.KeyMsg{Type: key}); m = changed.(model) }
+	press(tea.KeyDown)
+	if m.focus != 1 || m.filesystem != 0 {
+		t.Fatal("Down must select filesystem without changing it")
+	}
+	press(tea.KeyRight)
+	if m.focus != 1 || m.filesystem != 1 {
+		t.Fatal("Right must change filesystem")
+	}
+	press(tea.KeyDown)
+	changed, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = changed.(model)
+	if m.focus != 2 || !m.encrypt {
+		t.Fatal("Space must toggle encryption")
+	}
+	press(tea.KeyDown)
+	if m.focus != 3 || !m.inputs[0].Focused() {
+		t.Fatal("Down must focus password input")
+	}
+	press(tea.KeyUp)
+	if m.focus != 2 || m.inputs[0].Focused() {
+		t.Fatal("Up must blur password input")
+	}
+	press(tea.KeyShiftTab)
+	if m.focus != 1 {
+		t.Fatal("Shift+Tab must select previous field")
+	}
+}

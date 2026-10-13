@@ -344,7 +344,8 @@ RAM filesystem with its image store, instead of filling the live `/var/tmp`
 overlay. An approximately 800 MiB VM cannot stage this image.
 
 The Go Bubble Tea interface lists eligible whole drives with size, model and serial.
-Use Tab to select fields, arrows to change choices, and Enter to activate controls.
+Use Tab or Up/Down to select fields, Left/Right to change choices, Space to toggle
+encryption, and Enter to activate controls.
 Review the installation, inspect
 logs, retry a failed step, or open a rescue shell.
 Select **ext4** (default), **Btrfs**, or **XFS**, then choose an unencrypted root
