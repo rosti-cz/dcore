@@ -113,6 +113,7 @@ OS line through a system-wide default configuration.
 | `djust switch-locale` | Search available locales with fzf and apply the selection system-wide; log in again to use it. |
 | `djust set-timezone` | Search available timezones with fzf and apply the selection immediately. |
 | `djust set-hostname` | Enter and apply a new system hostname; Enter cancels without changes. |
+| `djust hush-banner` | Toggle the automatic login banner for the current user; applies on the next login. |
 
 The image includes precompiled Debian locales for use with immutable `/usr`.
 `switch-locale` applies your choice with Debian's `update-locale` tool;
@@ -180,16 +181,17 @@ character art. The image build uses Chafa to render `logo.png` into a portable
 Running `fastfetch` displays it again. Remote commands and non-login shells do
 not display the banner.
 
-To disable the automatic Fastfetch display for your user on SSH and local console
-logins, create an empty `.hushlogin` file in your home directory:
+To toggle the automatic Fastfetch display for your user on SSH and local console
+logins, run:
 
 ```sh
-touch ~/.hushlogin
+djust hush-banner
 ```
 
-This takes effect on your next login. Remove the file with `rm ~/.hushlogin` to
-enable the display again. You can still run `fastfetch` manually while the file
-exists.
+The command creates `~/.hushlogin` to disable the banner, or removes it to enable
+the banner again. It needs no sudo and takes effect on your next login. You can
+also manage the flag manually with `touch ~/.hushlogin` and `rm ~/.hushlogin`.
+Running `fastfetch` manually still works when the banner is disabled.
 
 The image creates `core` with a persistent home at
 `/var/home/core` (`/home/core` resolves there too). Its password is locked by

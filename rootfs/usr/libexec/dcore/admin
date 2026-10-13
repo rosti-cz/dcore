@@ -12,7 +12,7 @@ import subprocess
 import sys
 import types
 
-COMMANDS = ('change-luks-password', 'enroll-tpm', 'enroll-secureboot', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus', 'switch-locale', 'set-timezone', 'set-hostname')
+COMMANDS = ('change-luks-password', 'enroll-tpm', 'enroll-secureboot', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus', 'switch-locale', 'set-timezone', 'set-hostname', 'hush-banner')
 INSTALLER = Path('/usr/libexec/dcore/install/block_install')
 # Preserve the original filename for existing host configurations.
 TIMER_DROPIN = Path('/etc/systemd/system/dcore-update.timer.d/20-ujust.conf')
@@ -78,6 +78,17 @@ def fuzzy_select(title, options):
     if value not in options:
         raise ValueError('Invalid selection; no changes made.')
     return value
+
+
+def hush_banner():
+    hush = Path.home() / '.hushlogin'
+    if os.path.lexists(hush):
+        # Remove only the flag itself, including a symlink; never its target.
+        hush.unlink()
+        print('Login banner enabled for your next login.')
+    else:
+        hush.touch(exist_ok=False)
+        print('Login banner disabled. Run djust hush-banner again to enable it.')
 
 
 def switch_locale():

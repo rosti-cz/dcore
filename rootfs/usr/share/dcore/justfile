@@ -47,3 +47,7 @@ set-hostname:
 # Change the root LUKS2 password while preserving TPM enrollment.
 change-luks-password:
     @/usr/libexec/dcore/admin change-luks-password
+
+# Toggle the current user's automatic login banner without sudo.
+hush-banner:
+    @/usr/libexec/dcore/admin hush-banner
