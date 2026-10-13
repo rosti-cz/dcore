@@ -31,7 +31,7 @@ for unit in openvswitch-switch.service ovsdb-server.service ovs-vswitchd.service
     state=$(systemctl --root=/ is-enabled "$unit" 2>/dev/null || true)
     [[ $state == disabled || $state == static ]]
 done
-for tool in ip networkctl hostnamectl just djust tpm2 systemd-cryptenroll cryptsetup fish fastfetch fzf locale localectl timedatectl smartctl smartd htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs growpart sgdisk resize2fs xfs_growfs sfdisk partx findmnt unshare distrobox distrobox-create newuidmap newgidmap slirp4netns fuse-overlayfs pasta ovs-vsctl ovs-vswitchd brew bootc; do
+for tool in ip networkctl hostnamectl just djust tpm2 systemd-cryptenroll cryptsetup fish fastfetch fzf locale localectl update-locale timedatectl smartctl smartd htop vim nmap git tmux wget curl jq unzip iotop ncdu parted rsync http batcat rg tracepath duf docker rclone incus zfs btrfs growpart sgdisk resize2fs xfs_growfs sfdisk partx findmnt unshare distrobox distrobox-create newuidmap newgidmap slirp4netns fuse-overlayfs pasta ovs-vsctl ovs-vswitchd brew bootc; do
     command -v "$tool" > /dev/null
 done
 test -x /usr/libexec/incus/incus-agent

@@ -82,10 +82,11 @@ def fuzzy_select(title, options):
 
 def switch_locale():
     tty()
-    selected = fuzzy_select('Locale', run('localectl', '--no-pager', 'list-locales', capture=True).stdout.splitlines())
+    selected = fuzzy_select('Locale', run('locale', '-a', capture=True).stdout.splitlines())
     if selected is None:
         return
-    run('localectl', 'set-locale', selected, privileged=True)
+    # Debian deliberately makes localed read-only, including for root.
+    run('update-locale', f'LANG={selected}', privileged=True)
     print(f'System locale set to {selected}. Log in again to use it; existing services may need restarting.')
 
 

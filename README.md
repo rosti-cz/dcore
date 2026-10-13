@@ -89,7 +89,8 @@ an image.
 ## Administration with djust
 
 The image includes Debian's `just` command runner and a system Justfile at
-`/usr/share/dcore/justfile`. Run `djust` to list commands from any directory.
+`/usr/share/dcore/justfile`. Run `djust` from any directory to open the command
+picker, or `djust --list` to list commands.
 Invoke it directly as `core` or another ordinary user; root and `sudo djust` are rejected. Individual system
 operations use sudo, while Homebrew runs as its owner, `core`.
 Privileged commands request sudo automatically; core has passwordless sudo.
@@ -114,6 +115,8 @@ OS line through a system-wide default configuration.
 | `djust set-hostname` | Enter and apply a new system hostname; Enter cancels without changes. |
 
 The image includes precompiled Debian locales for use with immutable `/usr`.
+`switch-locale` applies your choice with Debian's `update-locale` tool;
+Debian's read-only localed policy blocks `localectl set-locale`.
 In either picker, type to search, use arrow keys to choose, and press Enter to
 apply. Esc cancels without changing the system configuration. Switching locale
 sets the system's `LANG`; existing locale category settings and user-specific

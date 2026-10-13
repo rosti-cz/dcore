@@ -141,10 +141,12 @@ class AdminTests(unittest.TestCase):
             with self.subTest(tool=tool), mock.patch.object(admin, 'run',
                     side_effect=[result(value+'\n'), result(value+'\n'), result()]) as run:
                 action()
-            self.assertEqual(run.call_args_list[0], mock.call(tool, '--no-pager', listing, capture=True))
+            listing_call = mock.call('locale', '-a', capture=True) if action == admin.switch_locale else mock.call(tool, '--no-pager', listing, capture=True)
+            self.assertEqual(run.call_args_list[0], listing_call)
             self.assertEqual(run.call_args_list[1].args[0], 'fzf')
             self.assertNotIn('privileged', run.call_args_list[1].kwargs)
-            self.assertEqual(run.call_args_list[-1], mock.call(tool, setting, value, privileged=True))
+            expected = mock.call('update-locale', f'LANG={value}', privileged=True) if action == admin.switch_locale else mock.call(tool, setting, value, privileged=True)
+            self.assertEqual(run.call_args_list[-1], expected)
 
     def test_picker_cancellation_and_errors_never_apply_settings(self):
         for action in (admin.switch_locale, admin.set_timezone):
