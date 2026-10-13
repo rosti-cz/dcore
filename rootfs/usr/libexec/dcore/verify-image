@@ -48,6 +48,8 @@ for tool in admin admin-privileged install/block_install install/lib/check-block
 done
 test -x /usr/libexec/dcore/grow-root
 test -s /usr/share/dcore/homebrew-seed.tar.zst
+test -s /usr/share/dcore/logo.png
+test -s /usr/share/dcore/logo.ansi
 getent passwd core > /dev/null
 for account in root core; do
     [[ $(getent passwd "$account" | cut -d: -f7) == /usr/bin/fish ]]

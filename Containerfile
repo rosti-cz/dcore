@@ -22,6 +22,13 @@ WORKDIR /home/build
 RUN --mount=type=bind,source=shared/build.sh,target=/build-bootc.sh \
     . "${CARGO_HOME}/env" && /build-bootc.sh
 
+# Pre-render terminal art so SSH/serial consoles need no pixel-size queries.
+FROM base AS logo-builder
+RUN apt-get update && apt-get install -y --no-install-recommends chafa
+COPY logo.png /logo.png
+RUN chafa --format symbols --colors 16/8 --symbols block --size 36x12 \
+    --animate off /logo.png > /logo.ansi
+
 FROM docker.io/library/golang:1.26.9-trixie AS installer-builder
 WORKDIR /build
 COPY installer/go.mod installer/go.sum ./
@@ -40,6 +47,8 @@ LABEL containers.bootc="1" ostree.bootable="1" \
     org.opencontainers.image.source="${IMAGE_SOURCE}" \
     org.opencontainers.image.revision="${IMAGE_REVISION}"
 COPY rootfs/ /
+COPY logo.png /usr/share/dcore/logo.png
+COPY --from=logo-builder /logo.ansi /usr/share/dcore/logo.ansi
 COPY secureboot/dcore.crt secureboot/dcore.der /usr/share/dcore/secureboot/
 RUN --mount=type=tmpfs,target=/tmp --mount=type=tmpfs,target=/boot \
     --mount=type=bind,source=scripts/install-system.sh,target=/install-system.sh \

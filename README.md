@@ -173,7 +173,13 @@ preserved. See [systemd's TPM policy documentation](https://www.freedesktop.org/
 
 ## Core user, Homebrew and Distrobox
 
-Root and core use Fish as their default login shell. The image creates `core`
+Root and core use Fish as their default login shell. Interactive SSH and local
+console logins show Fastfetch with the bundled dcore logo rendered as terminal
+character art. The image build uses Chafa to render `logo.png` into a portable
+36×12 ANSI logo, so consoles need no image protocol or pixel-size queries.
+Running `fastfetch` displays it again; create `~/.hushlogin` to
+suppress the automatic login display. Remote commands and non-login shells do
+not display the banner. The image creates `core`
 with a persistent home at
 `/var/home/core` (`/home/core` resolves there too). Its password is locked by
 default; use `sudo -iu core` from an administrator account or add an SSH public
