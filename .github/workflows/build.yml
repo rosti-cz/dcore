@@ -71,7 +71,8 @@ jobs:
 
   build:
     needs: configure
-    runs-on: ubuntu-24.04
+    # Only default-branch builds use the persistent organization runner.
+    runs-on: ${{ fromJSON(github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && '["self-hosted", "linux", "x64", "dcore"]' || '["ubuntu-24.04"]') }}
     timeout-minutes: 120
     permissions:
       contents: read

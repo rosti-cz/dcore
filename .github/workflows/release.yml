@@ -47,7 +47,7 @@ jobs:
 
   build:
     needs: configure
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, dcore]
     timeout-minutes: 150
     permissions:
       contents: write
@@ -65,10 +65,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
-      - name: Prepare disk-image tools and runner space
+      - name: Prepare disk-image tools
         run: |
-          # Remove unused SDKs only on this disposable GitHub-hosted runner.
-          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
           sudo apt-get update
           sudo apt-get install -y podman qemu-utils xz-utils
           sudo modprobe loop
@@ -92,8 +90,6 @@ jobs:
             --build-arg "IMAGE_REVISION=$SOURCE_REVISION" \
             --tag "$VERSIONED_IMAGE" --file Containerfile .
           sudo podman run --rm "$VERSIONED_IMAGE" /usr/libexec/dcore/verify-image
-          # Keep the tagged result, discard compiler layers before allocating disks.
-          sudo podman image prune --force
       - name: Remove signing secret from runner
         if: always()
         run: rm -f "$RUNNER_TEMP/dcore-secureboot.key"
@@ -104,8 +100,8 @@ jobs:
         run: |
           printf '%s' "$REGISTRY_TOKEN" | sudo podman login ghcr.io --username "$REGISTRY_USER" --password-stdin
           trap 'sudo podman logout ghcr.io' EXIT
-          sudo podman push --digestfile /tmp/dcore-release-digest "$VERSIONED_IMAGE"
-          DIGEST=$(sudo cat /tmp/dcore-release-digest)
+          sudo podman push --digestfile "$RUNNER_TEMP/dcore-release-digest" "$VERSIONED_IMAGE"
+          DIGEST=$(sudo cat "$RUNNER_TEMP/dcore-release-digest")
           echo "SOURCE_IMAGE=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
       - name: Build raw, QEMU and Incus artifacts
         run: |
