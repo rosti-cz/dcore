@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 bootc container lint --fatal-warnings
+test ! -e /etc/hostid
+test -x /usr/libexec/dcore/provision-hostid
+systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-hostid.service
 ostree --version | grep -q composefs
 systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-update.service /usr/lib/systemd/system/dcore-update.timer /usr/lib/systemd/system/dcore-grow-root.service /usr/lib/systemd/system/dcore-homebrew.service /usr/lib/systemd/system/dcore-network-bootstrap.service
 mapfile -t kernels < <(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n')
@@ -18,7 +21,7 @@ grow_hook=$(lsinitrd -f usr/lib/systemd/system/dcore-grow-luks-root.service "$in
 grep -q -- '--initrd-luks-root dcore-root' <<< "$grow_hook"
 root_config=$(lsinitrd -f usr/lib/ostree/prepare-root.conf "$initramfs")
 grep -q 'enabled = yes' <<< "$root_config"
-for unit in systemd-timesyncd.service fstrim.timer dcore-grow-root.service dcore-homebrew.service dcore-network-bootstrap.service; do
+for unit in systemd-timesyncd.service fstrim.timer dcore-grow-root.service dcore-homebrew.service dcore-network-bootstrap.service dcore-hostid.service; do
     [[ $(systemctl --root=/ is-enabled "$unit") == enabled ]]
 done
 for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updates.timer apt-daily.timer apt-daily-upgrade.timer; do

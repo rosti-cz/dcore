@@ -1379,6 +1379,11 @@ filesystem is not configured. The image builds and checks its ZFS module before
 publishing. Release modules are signed with the dcore certificate; enroll it
 through `djust enroll-secureboot` and confirm in MokManager before using ZFS
 with Secure Boot enabled.
+On the first installed boot, `dcore-hostid.service` creates a unique
+`/etc/hostid` before ZFS pool import. The file is preserved on subsequent boots
+and image upgrades; generic images contain no host ID. Existing host IDs are
+kept. Hosts affected by earlier images need their original host ID restored
+before upgrading to an image that removes the build-generated default.
 Zabbly's payload stays at `/opt/incus`, with `/opt` kept as a real directory in
 the immutable composefs image so Incus updates atomically with the OS. LXC rejects
 symlinks in its rootfs mount path (`/opt/incus/lib/lxc/rootfs`); symlinking `/opt`

@@ -1,0 +1,34 @@
+#!/usr/bin/python3
+"""Create a per-host ZFS identity once, preserving it across image upgrades."""
+import os
+from pathlib import Path
+import sys
+
+
+def provision(root=Path('/')):
+    path = root / 'etc/hostid'
+    try:
+        existing = path.read_bytes()
+    except FileNotFoundError:
+        existing = None
+    if existing is not None:
+        if len(existing) != 4 or existing == bytes(4):
+            raise ValueError('Invalid /etc/hostid; refusing to replace an existing host identity.')
+        return
+    identity = bytes(4)
+    while identity == bytes(4):
+        identity = os.urandom(4)
+    # Exclusive creation prevents overwriting an identity provisioned elsewhere.
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(descriptor, 'wb') as output:
+        output.write(identity)
+        output.flush()
+        os.fsync(output.fileno())
+
+
+if __name__ == '__main__':
+    try:
+        provision()
+    except (OSError, ValueError) as error:
+        print(f'ZFS host identity provisioning failed: {error}', file=sys.stderr)
+        sys.exit(1)

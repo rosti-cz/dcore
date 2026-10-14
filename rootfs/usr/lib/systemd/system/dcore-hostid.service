@@ -1,0 +1,13 @@
+[Unit]
+Description=Provision persistent ZFS host identity
+DefaultDependencies=no
+After=systemd-remount-fs.service
+Before=zfs-import-cache.service zfs-import-scan.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/dcore/provision-hostid
+RemainAfterExit=yes
+
+[Install]
+WantedBy=zfs-import.target

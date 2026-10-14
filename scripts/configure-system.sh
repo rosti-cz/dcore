@@ -10,7 +10,7 @@ systemctl enable systemd-boot-update.service
 # login defaults as well as the sysusers definition used for core provisioning.
 usermod --shell /usr/bin/fish root
 usermod --shell /usr/bin/fish core
-systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh fstrim.timer dcore-grow-root.service dcore-homebrew.service dcore-network-bootstrap.service
+systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh fstrim.timer dcore-grow-root.service dcore-homebrew.service dcore-network-bootstrap.service dcore-hostid.service
 # Disable all competing image/APT update schedules, including upstream defaults.
 for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updates.timer apt-daily.timer apt-daily-upgrade.timer; do
     if [[ -f "/usr/lib/systemd/system/$unit" ]]; then systemctl --root=/ disable "$unit"; fi
@@ -22,6 +22,9 @@ printf 'PasswordAuthentication no\n' > /etc/ssh/sshd_config.d/10-dcore.conf
 # The key is unique to each installed server and must not be baked into an image.
 rm -f /etc/ssh/ssh_host_*
 : > /etc/machine-id
+# zfsutils-linux generates this during package installation. It must be local
+# to the installed host, otherwise each image upgrade changes the ZFS identity.
+rm -f /etc/hostid
 # Ensure sshd generates host keys on the first installed boot.
 install -d /etc/systemd/system/ssh.service.d
 printf '[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStartPre=/usr/sbin/sshd -t\n' > /etc/systemd/system/ssh.service.d/10-host-keys.conf
