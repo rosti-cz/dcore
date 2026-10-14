@@ -24,6 +24,14 @@ jobs:
       incus_channel: ${{ steps.config.outputs.incus_channel }}
     steps:
       - uses: actions/checkout@v7
+      - name: Test fresh Debian package selection
+        run: |
+          release=$(jq -r .stable_release build-config.json)
+          channel=$(jq -r .incus_channel build-config.json)
+          sudo podman run --rm --security-opt label=disable \
+            -v "$GITHUB_WORKSPACE:/source:ro" \
+            -e "DEBIAN_RELEASE=$release" -e "INCUS_CHANNEL=$channel" \
+            "docker.io/library/debian:$release" bash /source/tests/test-package-selection.sh
       - name: Test installer filesystem selection and disk safeguards
         run: |
           sudo modprobe loop

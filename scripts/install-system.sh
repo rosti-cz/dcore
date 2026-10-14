@@ -40,6 +40,13 @@ Suites: ${DEBIAN_RELEASE}-backports
 Components: main contrib non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 EOF
+# Keep every OpenZFS binary/library on the same backports version. Selecting
+# just zfsutils-linux/suite leaves stable candidates for shared library names.
+cat > /etc/apt/preferences.d/dcore-zfs-backports <<EOF
+Package: src:zfs-linux
+Pin: release n=${DEBIAN_RELEASE}-backports
+Pin-Priority: 990
+EOF
 apt-get update
 apt-get install -y --no-install-recommends \
     just tpm2-tools cryptsetup systemd-cryptsetup build-essential procps file distrobox uidmap slirp4netns fuse-overlayfs passt libpam-systemd dbus-user-session openvswitch-switch openvswitch-common btrfs-progs cloud-guest-utils gdisk python3 bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
