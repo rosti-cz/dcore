@@ -57,6 +57,14 @@ done
 visudo --check
 dpkg-query -W cryptsetup systemd-cryptsetup distrobox uidmap openvswitch-switch openvswitch-common build-essential cloud-guest-utils gdisk btrfs-progs incus-agent zfs-dkms zfsutils-linux incus docker.io docker-compose systemd-timesyncd > /dev/null
 incus --version
+# LXC rejects symlinks anywhere in its compiled-in rootfs mount path.
+# Version checks alone succeed even when this layout prevents container startup.
+for directory in /opt /opt/incus /opt/incus/lib /opt/incus/lib/lxc /opt/incus/lib/lxc/rootfs; do
+    if [[ ! -d $directory || -L $directory ]]; then
+        echo "LXC rootfs mount path requires a real directory: $directory" >&2
+        exit 1
+    fi
+done
 LD_LIBRARY_PATH=/opt/incus/lib /opt/incus/bin/incusd --version
 LD_LIBRARY_PATH=/opt/incus/lib "/opt/incus/bin/qemu-system-$(uname -m)" --version
 docker compose version

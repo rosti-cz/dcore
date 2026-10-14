@@ -1379,8 +1379,10 @@ filesystem is not configured. The image builds and checks its ZFS module before
 publishing. Release modules are signed with the dcore certificate; enroll it
 through `djust enroll-secureboot` and confirm in MokManager before using ZFS
 with Secure Boot enabled.
-Zabbly's `/opt/incus` payload is kept in `/usr/lib/opt/incus`, with `/opt` pointing
-to `/usr/lib/opt` so its original paths continue to work and update atomically.
+Zabbly's payload stays at `/opt/incus`, with `/opt` kept as a real directory in
+the immutable composefs image so Incus updates atomically with the OS. LXC rejects
+symlinks in its rootfs mount path (`/opt/incus/lib/lxc/rootfs`); symlinking `/opt`
+causes container startup to fail with "Too many levels of symbolic links".
 Use `/var/opt` for locally installed mutable software.
 Enable Incus on the installed host with `djust enable-incus`. This adds `core`
 to `incus-admin`. Start a new login session or run `newgrp incus-admin`, then

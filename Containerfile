@@ -71,10 +71,9 @@ RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp --mount=type=t
     /configure-system.sh && python3 /sign-secureboot.py --required "$SECUREBOOT_REQUIRED" && /initramfs.sh
 RUN --mount=type=bind,source=shared/bootc-rootfs.sh,target=/bootc-rootfs.sh \
     sed -i 's|^HOME=.*|HOME=/var/home|' /etc/default/useradd && \
-    mkdir -p /usr/lib/opt /usr/lib/sysimage && \
-    mv /opt/incus /usr/lib/opt/ && mv /var/lib/dpkg /usr/lib/sysimage/dpkg && \
+    mkdir -p /usr/lib/sysimage && \
+    mv /var/lib/dpkg /usr/lib/sysimage/dpkg && \
     /bootc-rootfs.sh && \
-    ln -sfn usr/lib/opt /opt && \
     mkdir -p /var/lib && ln -s /usr/lib/sysimage/dpkg /var/lib/dpkg && \
     find /run /tmp -mindepth 1 -maxdepth 1 ! -path /run/secrets ! -path /run/.containerenv -exec rm -rf -- {} +
 RUN --mount=type=tmpfs,target=/run --mount=type=tmpfs,target=/tmp /usr/libexec/dcore/verify-image

@@ -2,11 +2,13 @@
 
 set -xeuo pipefail
 
-rm -rf /boot /home /root /usr/local /srv /opt /mnt /var /usr/lib/sysimage/log /usr/lib/sysimage/cache/pacman/pkg
+rm -rf /boot /home /root /usr/local /srv /mnt /var /usr/lib/sysimage/log /usr/lib/sysimage/cache/pacman/pkg
 
-mkdir -p /sysroot /boot /usr/lib/ostree /var
+mkdir -p /sysroot /boot /usr/lib/ostree /var /opt
 
-ln -sT sysroot/ostree /ostree && ln -sT var/roothome /root && ln -sT var/srv /srv && ln -sT var/opt /opt && ln -sT var/mnt /mnt && ln -sT var/home /home && ln -sT ../var/usrlocal /usr/local
+# Keep packaged /opt content in the immutable image. LXC opens its rootfs mount
+# at /opt/incus/lib/lxc/rootfs with RESOLVE_NO_SYMLINKS, including all ancestors.
+ln -sT sysroot/ostree /ostree && ln -sT var/roothome /root && ln -sT var/srv /srv && ln -sT var/mnt /mnt && ln -sT var/home /home && ln -sT ../var/usrlocal /usr/local
 
 echo "$(for dir in opt home srv mnt usrlocal ; do echo "d /var/$dir 0755 root root -" ; done)" | tee -a "/usr/lib/tmpfiles.d/bootc-base-dirs.conf"
 
