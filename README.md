@@ -357,6 +357,13 @@ connected, configure networking manually. Its persistent decision is recorded
 in `/var/lib/dcore/network-bootstrap.done`. The installer ISO uses the same
 first-connected-port setup. Netplan is no longer included.
 
+The image enables IPv4 forwarding during early boot through
+`/usr/lib/sysctl.d/90-dcore-forwarding.conf`. This prevents Docker from setting
+the global firewall forwarding policy to DROP when it enables forwarding,
+which would block Incus guests on host bridges. Override the default with a
+later configuration file in `/etc/sysctl.d/` if needed. An existing DROP policy
+requires a separate firewall adjustment; this setting does not reset it.
+
 ## Offline installer ISO
 
 Every GitHub release also builds
