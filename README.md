@@ -37,6 +37,17 @@ initramfs, boot arguments and composefs root digest are not signed as a sealed
 UKI; Secure Boot compatibility does not provide complete root filesystem
 attestation.
 
+The kernel and OpenZFS packages come from Debian stable-backports; the rest of
+the Debian system uses stable packages and its security updates. The offline
+installer ISO also uses the backports kernel for hardware support. ZFS modules
+are compiled and signed for the image kernel during the build. Backports security
+fixes are supplied by package maintainers on a
+[best-effort basis](https://backports.debian.org/FAQ/).
+
+Local validation on 2026-10-14 used Linux 7.2.6 and OpenZFS 2.4.4 in a
+Secure Boot QEMU VM with Btrfs on LUKS2. It verified signed module loading,
+unsigned module rejection, and a ZFS write/snapshot/export/import roundtrip.
+
 It includes Debian ZFS (with a module compiled for the image kernel), Incus from
 [Zabbly's stable repository](https://github.com/zabbly/incus), Docker and Compose,
 and the requested CLI tools. Run backup tools such as Restic and Rustic in

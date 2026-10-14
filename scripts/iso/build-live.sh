@@ -23,12 +23,19 @@ lb config --mode debian --distribution "$DEBIAN_RELEASE" --architecture amd64 \
     --binary-image iso-hybrid --bootloaders grub-efi --debian-installer none \
     --chroot-squashfs-compression-type xz \
     --archive-areas 'main contrib non-free-firmware' --apt-recommends false \
-    --firmware-chroot false --uefi-secure-boot enable \
+    --firmware-chroot false --uefi-secure-boot enable --backports true \
     --bootappend-live 'boot=live components ip=none' --iso-volume DCORE_INSTALL
 mkdir -p config/package-lists config/includes.binary/dcore \
     config/includes.chroot/usr/libexec/dcore/install \
     config/includes.chroot/etc/containers \
     config/includes.chroot/etc/systemd/system/multi-user.target.wants
+# Use backports for the live kernel too, for consistent hardware support.
+mkdir -p config/archives
+cat > config/archives/dcore-kernel.pref.chroot <<EOF
+Package: linux-image-* linux-base linux-base-*
+Pin: release n=${DEBIAN_RELEASE}-backports
+Pin-Priority: 990
+EOF
 cat > config/package-lists/installer.list.chroot <<'PACKAGES'
 linux-image-amd64
 firmware-linux-free

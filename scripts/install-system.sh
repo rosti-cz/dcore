@@ -32,15 +32,24 @@ case "$(dpkg --print-architecture)" in
     arm64) kernel_arch=arm64 ;;
     *) echo "Only amd64 and arm64 are supported" >&2; exit 1 ;;
 esac
+# Opt in only the kernel and matching OpenZFS stack; other packages stay stable.
+cat > /etc/apt/sources.list.d/debian-backports.sources <<EOF
+Types: deb
+URIs: https://deb.debian.org/debian
+Suites: ${DEBIAN_RELEASE}-backports
+Components: main contrib non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+EOF
 apt-get update
 apt-get install -y --no-install-recommends \
     just tpm2-tools cryptsetup systemd-cryptsetup build-essential procps file distrobox uidmap slirp4netns fuse-overlayfs passt libpam-systemd dbus-user-session openvswitch-switch openvswitch-common btrfs-progs cloud-guest-utils gdisk python3 bubblewrap dosfstools e2fsprogs fdisk parted firmware-linux-free \
-    "linux-image-${kernel_arch}" "linux-headers-${kernel_arch}" \
+    "linux-image-${kernel_arch}/${DEBIAN_RELEASE}-backports" "linux-headers-${kernel_arch}/${DEBIAN_RELEASE}-backports" \
     "systemd-boot-efi-${kernel_arch}-signed" shim-signed mokutil sbsigntool openssl \
     iproute2 libnss-resolve libnss-myhostname openssh-server skopeo wireguard \
     systemd systemd-sysv systemd-boot systemd-boot-efi systemd-resolved \
     systemd-timesyncd smartmontools xfsprogs libostree-1-1 ostree dracut kmod podman sudo \
-    zfs-dkms zfsutils-linux zfs-zed zfs-dracut incus incus-agent \
+    "zfs-dkms/${DEBIAN_RELEASE}-backports" "zfsutils-linux/${DEBIAN_RELEASE}-backports" \
+    "zfs-zed/${DEBIAN_RELEASE}-backports" "zfs-dracut/${DEBIAN_RELEASE}-backports" incus incus-agent \
     fish fastfetch fzf locales locales-all tzdata htop vim nmap git tmux wget curl jq unzip iotop ncdu rsync httpie bat \
     ripgrep iputils-tracepath duf docker.io docker-cli docker-compose rclone \
     bzip2 zstd

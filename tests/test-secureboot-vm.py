@@ -150,7 +150,7 @@ SERIAL
                 if vm.poll() is not None or time.monotonic() > deadline:
                     raise TimeoutError('Secure Boot guest login; inspect '+str(work))
                 time.sleep(2)
-            checks = guest('sudo mokutil --sb-state; sudo cat /sys/kernel/security/lockdown; findmnt -n -o FSTYPE /sysroot; sudo bootctl update')
+            checks = guest('uname -r; sudo mokutil --sb-state; sudo cat /sys/kernel/security/lockdown; findmnt -n -o FSTYPE /sysroot; sudo bootctl update')
             (work/(label+'-checks.log')).write_text(checks.stdout + checks.stderr)
             assert 'SecureBoot enabled' in checks.stdout and '[integrity]' in checks.stdout, checks.stdout
             assert args.filesystem in checks.stdout.splitlines(), checks.stdout
@@ -202,6 +202,20 @@ SERIAL
             if enrolled:
                 assert load.returncode == 0, load.stderr
                 assert 'dcore Secure Boot Signing' in guest('modinfo -F signer zfs').stdout
+                # Exercise the compiled storage stack, including export/import.
+                pool_test = '''
+                sudo truncate -s 256M /var/tmp/dcore-zfs-smoke.img
+                sudo zpool create -f -m /var/tmp/dcore-zfs-smoke dcore-smoke /var/tmp/dcore-zfs-smoke.img
+                printf 'dcore ZFS roundtrip\n' | sudo tee /var/tmp/dcore-zfs-smoke/check >/dev/null
+                sudo zfs snapshot dcore-smoke@verified
+                sudo zpool export dcore-smoke
+                sudo zpool import -d /var/tmp dcore-smoke
+                test "$(cat /var/tmp/dcore-zfs-smoke/check)" = 'dcore ZFS roundtrip'
+                sudo zpool destroy dcore-smoke
+                sudo rm /var/tmp/dcore-zfs-smoke.img
+                '''
+                storage = guest('bash -eu -c ' + shlex.quote(pool_test))
+                (work/(label+'-zfs-storage.log')).write_text(storage.stdout + storage.stderr)
                 # Reject a signature-stripped SPL module after unloading ZFS.
                 guest('sudo systemctl stop zfs-zed.service; sudo modprobe -r zfs; test ! -d /sys/module/spl')
                 program = "import lzma; from pathlib import Path; p=next(Path('/usr/lib/modules').glob('*/updates/dkms/spl.ko.xz')); d=lzma.decompress(p.read_bytes()); m=b'~Module signature appended~\\n'; e=len(d)-len(m)-12; n=int.from_bytes(d[e+8:e+12],'big'); Path('/var/tmp/unsigned-spl.ko').write_bytes(d[:e-n])"
