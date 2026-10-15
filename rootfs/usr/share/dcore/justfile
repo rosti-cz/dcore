@@ -28,6 +28,10 @@ gen-sshkey:
 enable-autoupgrade:
     @/usr/libexec/dcore/admin enable-autoupgrade
 
+# Enable one-shot rollback protection for automatic OS updates.
+enable-autorollback:
+    @/usr/libexec/dcore/admin enable-autorollback
+
 # Enable the Incus server, or offer to disable it if already enabled.
 enable-incus:
     @/usr/libexec/dcore/admin enable-incus

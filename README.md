@@ -116,6 +116,7 @@ OS line through a system-wide default configuration.
 | `djust change-luks-password` | Interactively change the root LUKS2 password; TPM enrollment remains intact. |
 | `djust upgrade` | Stage the OS update, then run Homebrew update and upgrade as core; reboot separately to apply the OS update. |
 | `djust upgrade os` / `djust upgrade homebrew` | Update only the selected component, for example after a failed upgrade. |
+| `djust enable-autorollback` | Enable one-shot rollback protection for future automatic OS updates; preserves existing pauses and leaves the update schedule unchanged. |
 | `djust install` | Open the shared installer wizard; choose an unused drive, filesystem, encryption and core password, then install the exact booted image version. |
 | `djust install plain` | Use the original SSH public-key prompts for installation. |
 | `djust gen-sshkey` | Generate `/var/home/core/.ssh/id_ed25519` as core, or report an existing key without replacing it. |
@@ -1384,9 +1385,13 @@ update/rollback rehearsal before production use. Enable it on an installed
 image containing the update guard, before staging the next update:
 
 ```sh
-sudo install -d -m 0755 /etc/dcore
-sudo touch /etc/dcore/auto-rollback-enabled
+djust enable-autorollback
 ```
+
+Run it as core or another ordinary user, without `sudo`; it requests privileges
+for the host settings. It also enables the post-boot check timer. It preserves
+any existing update pause and leaves the update schedule unchanged. To enable
+scheduled updates too, run `djust enable-autoupgrade`.
 
 This protects updates performed by `dcore-update.service`. Direct `bootc`
 commands and `djust upgrade` bypass the guard. The guard checks the current

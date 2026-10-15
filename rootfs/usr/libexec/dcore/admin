@@ -12,10 +12,11 @@ import subprocess
 import sys
 import types
 
-COMMANDS = ('change-luks-password', 'enroll-tpm', 'enroll-secureboot', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-incus', 'switch-locale', 'set-timezone', 'set-hostname', 'hush-banner')
+COMMANDS = ('change-luks-password', 'enroll-tpm', 'enroll-secureboot', 'upgrade', 'install', 'gen-sshkey', 'enable-autoupgrade', 'enable-autorollback', 'enable-incus', 'switch-locale', 'set-timezone', 'set-hostname', 'hush-banner')
 INSTALLER = Path('/usr/libexec/dcore/install/block_install')
 # Preserve the original filename for existing host configurations.
 TIMER_DROPIN = Path('/etc/systemd/system/dcore-update.timer.d/20-ujust.conf')
+ROLLBACK_FLAG = Path('/etc/dcore/auto-rollback-enabled')
 CORE_SSH = Path('/var/home/core/.ssh')
 ROOT_SSH = Path('/root/.ssh')
 PRIVILEGED_HELPER = '/usr/libexec/dcore/admin-privileged'
@@ -357,6 +358,16 @@ def enable_autoupgrade():
     run('systemctl', 'daemon-reload', privileged=True)
     run('systemctl', 'enable', '--now', 'dcore-update.timer', privileged=True)
     run('systemctl', 'list-timers', 'dcore-update.timer', '--no-pager')
+
+
+def enable_autorollback():
+    booted_image()
+    run(PRIVILEGED_HELPER, 'enable-autorollback', privileged=True)
+    run('systemctl', 'enable', 'dcore-update-check.timer', privileged=True)
+    print('Automatic rollback protection enabled for future automatic OS updates.')
+    print('Manual bootc upgrades and djust upgrade bypass this protection.')
+    print('Existing update pauses remain in place; this command does not update or reboot.')
+    print('To enable scheduled updates too, run: djust enable-autoupgrade')
 
 
 def enable_incus():

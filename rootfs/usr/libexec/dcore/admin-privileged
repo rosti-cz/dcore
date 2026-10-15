@@ -37,7 +37,8 @@ def write_timer(path, calendar):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=('root-luks', 'check-disk', 'list-keys',
-                                            'core-key-status', 'prepare-core-ssh', 'write-timer'))
+                                            'core-key-status', 'prepare-core-ssh', 'write-timer',
+                                            'enable-autorollback'))
     parser.add_argument('value', nargs='?')
     args = parser.parse_args()
     if os.geteuid() != 0:
@@ -68,6 +69,9 @@ def main():
         admin.CORE_SSH.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chown(admin.CORE_SSH, account.pw_uid, account.pw_gid)
         admin.CORE_SSH.chmod(0o700)
+    elif args.operation == 'enable-autorollback':
+        admin.ROLLBACK_FLAG.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        admin.ROLLBACK_FLAG.touch(mode=0o644)
     else:
         if not args.value:
             parser.error('A calendar is required.')

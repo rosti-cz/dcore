@@ -108,6 +108,31 @@ class AdminTests(unittest.TestCase):
         privileged.write_timer(admin.TIMER_DROPIN, 'Sat *-*-* 02:30:00')
         self.assertEqual(admin.TIMER_DROPIN.read_text(), '[Timer]\nOnCalendar=\nOnCalendar=Sat *-*-* 02:30:00\nRandomizedDelaySec=0\n')
 
+    def test_enable_autorollback_only_enables_guard_and_check_timer(self):
+        with mock.patch.object(admin, 'booted_image') as booted, \
+             mock.patch.object(admin, 'run') as run:
+            admin.enable_autorollback()
+        booted.assert_called_once_with()
+        self.assertEqual(run.call_args_list, [
+            mock.call(admin.PRIVILEGED_HELPER, 'enable-autorollback', privileged=True),
+            mock.call('systemctl', 'enable', 'dcore-update-check.timer', privileged=True)])
+
+    def test_privileged_enable_autorollback_preserves_paused_state(self):
+        flag = self.work / 'etc/dcore/auto-rollback-enabled'
+        state = self.work / 'var/lib/dcore/update-guard/state.json'
+        state.parent.mkdir(parents=True)
+        paused = '{"version":1,"phase":"paused","reason":"unhealthy update"}'
+        state.write_text(paused)
+        with mock.patch.object(admin, 'ROLLBACK_FLAG', flag), \
+             mock.patch.object(privileged, '__file__', str(ROOT / 'rootfs/usr/libexec/dcore/admin-privileged'), create=True), \
+             mock.patch.object(privileged, 'load', return_value=admin), \
+             mock.patch.object(privileged.os, 'geteuid', return_value=0), \
+             mock.patch.object(sys, 'argv', ['admin-privileged', 'enable-autorollback']):
+            privileged.main()
+            privileged.main()
+        self.assertTrue(flag.is_file())
+        self.assertEqual(state.read_text(), paused)
+
     def test_invalid_time_and_noninteractive_refuse(self):
         with mock.patch.object(admin, 'booted_image'), mock.patch('builtins.input', side_effect=['1','25:00']), \
              mock.patch.object(admin, 'run') as run:
