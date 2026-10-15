@@ -1,0 +1,30 @@
+#!/usr/bin/python3
+"""Local health contract: 0 healthy, 1 unhealthy, 2 checker error.
+
+No external network, optional workloads, or system-wide failed-unit checks.
+"""
+import subprocess
+import sys
+
+
+def main():
+    for unit in ('ssh.service', 'systemd-networkd.service'):
+        result = subprocess.run(['/usr/bin/systemctl', 'show', '--property=ActiveState',
+                                 '--value', unit], capture_output=True, text=True, timeout=5)
+        if result.returncode:
+            return 2
+        state = result.stdout.strip()
+        if state not in ('active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading'):
+            return 2
+        if state != 'active':
+            print(f'Health failure: {unit} is {state}', flush=True)
+            return 1
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f'Health checker error: {error}', file=sys.stderr)
+        sys.exit(2)

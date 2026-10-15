@@ -6,6 +6,7 @@ if [[ ! -f /usr/libexec/dcore/bootctl.real ]]; then
 fi
 ln -sfn /usr/libexec/dcore/bootctl-shim /usr/bin/bootctl
 systemctl enable systemd-boot-update.service
+systemctl enable dcore-update-check.timer
 # Both accounts already exist after the Homebrew build stage. Set the image's
 # login defaults as well as the sysusers definition used for core provisioning.
 usermod --shell /usr/bin/fish root

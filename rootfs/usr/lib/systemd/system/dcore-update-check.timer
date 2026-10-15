@@ -1,0 +1,9 @@
+[Unit]
+Description=Check guarded updates five minutes after boot
+
+[Timer]
+OnBootSec=5min
+Unit=dcore-update-check.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,217 @@
+#!/usr/bin/python3
+"""One-shot userspace rollback for the weekly update agent.
+
+All ambiguous/interrupted operations require operator recovery. The durable
+pause is written BEFORE invoking rollback; neither boot nor timer clears it.
+"""
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
+STATE_DIR = Path('/var/lib/dcore/update-guard')
+ENABLED = Path('/etc/dcore/auto-rollback-enabled')
+CUSTOM_HEALTH = Path('/etc/dcore/update-health')
+DEFAULT_HEALTH = '/usr/libexec/dcore/update-health'
+BOOT_ID = Path('/proc/sys/kernel/random/boot_id')
+
+
+def run(*args, **kwargs):
+    kwargs.setdefault('timeout', 120)
+    executable = {'bootc': '/usr/bin/bootc', 'systemctl': '/usr/bin/systemctl'}[args[0]]
+    return subprocess.run((executable, *args[1:]), check=True, **kwargs)
+
+
+def status():
+    return json.loads(run('bootc', 'status', '--format=json',
+                          capture_output=True, text=True).stdout)['status']
+
+
+def identity(entry):
+    if not entry or entry.get('incompatible') or entry.get('downloadOnly'):
+        raise ValueError('Missing or unsupported deployment')
+    digest = entry['image']['imageDigest']
+    backend = {key: entry[key] for key in ('ostree', 'composefs') if entry.get(key)}
+    if not digest or len(backend) != 1:
+        raise ValueError('Missing deployment identity')
+    return {'digest': digest, **backend}
+
+
+def settled(current):
+    if current.get('staged') or current.get('rollbackQueued'):
+        raise ValueError('Another deployment change is already queued')
+
+
+def load():
+    path = STATE_DIR / 'state.json'
+    if not path.exists():
+        return {'version': 1, 'phase': 'idle'}
+    state = json.loads(path.read_text())
+    if state.get('version') != 1 or state.get('phase') not in (
+            'idle', 'staging', 'pending', 'checking', 'paused'):
+        raise ValueError('Unknown update guard state; operator recovery required')
+    return state
+
+
+def save(state):
+    """Commit both file contents and rename before allowing a boot mutation."""
+    fd, name = tempfile.mkstemp(dir=STATE_DIR, prefix='.state-')
+    try:
+        with os.fdopen(fd, 'w') as output:
+            json.dump({'version': 1, **state}, output)
+            output.write('\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(name, STATE_DIR / 'state.json')
+        directory = os.open(STATE_DIR, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def pause(state, reason):
+    save({**state, 'phase': 'paused', 'reason': reason})
+    print(f'Automatic OS updates paused: {reason}', flush=True)
+
+
+def health():
+    checker = str(CUSTOM_HEALTH) if (CUSTOM_HEALTH.exists() or CUSTOM_HEALTH.is_symlink()) else DEFAULT_HEALTH
+    # No shell. 1 means an explicit health failure; all other failures are
+    # checker errors, including signals, missing executables and timeouts.
+    result = subprocess.run([checker], timeout=30)
+    if result.returncode not in (0, 1):
+        raise ValueError(f'Health checker error: exit {result.returncode}')
+    return result.returncode == 0
+
+
+def update(state):
+    if state['phase'] != 'idle':
+        raise ValueError('Update guard is not idle; inspect state and recover manually')
+    if not ENABLED.is_file():
+        # Still honor a persistent pause even if /etc reverted during rollback.
+        run('bootc', 'upgrade', '--apply', timeout=7000)
+        return
+    current = status()
+    settled(current)
+    source = identity(current.get('booted'))
+    if not health():
+        pause(state, 'Current deployment failed pre-update health check')
+        return
+    state = {'phase': 'staging', 'source': source, 'boot_id': BOOT_ID.read_text().strip()}
+    save(state)
+    # Stage separately so the transaction can be persisted before rebooting.
+    run('bootc', 'upgrade', timeout=7000)
+    current = status()
+    if identity(current.get('booted')) != source or current.get('rollbackQueued'):
+        raise ValueError('Deployment changed while staging')
+    if not current.get('staged'):
+        save({'phase': 'idle'})
+        return
+    target = identity(current['staged'])
+    if target == source:
+        raise ValueError('Staged deployment has the same identity as the source')
+    save({**state, 'phase': 'pending', 'target': target})
+    run('systemctl', 'reboot')
+
+
+def check(state):
+    if state['phase'] in ('idle', 'paused'):
+        return
+    if state['phase'] != 'pending':
+        pause(state, 'Interrupted staging or health check; no automatic retry')
+        return
+    if state['boot_id'] == BOOT_ID.read_text().strip():
+        return
+    # Consume the health-check attempt before running any potentially broken code.
+    state = {**state, 'phase': 'checking'}
+    save(state)
+    if not ENABLED.is_file():
+        pause(state, 'Rollback was disabled after staging')
+        return
+    current = status()
+    settled(current)
+    if identity(current.get('booted')) != state['target']:
+        raise ValueError('Booted deployment does not match the guarded update')
+    for attempt in range(3):
+        if health():
+            save({'phase': 'idle'})
+            print('Guarded update passed health check', flush=True)
+            return
+        if attempt < 2:
+            time.sleep(30)
+    # Re-read after checks to catch an operator staging/switching deployments.
+    current = status()
+    settled(current)
+    if (identity(current.get('booted')) != state['target'] or
+            identity(current.get('rollback')) != state['source']):
+        raise ValueError('Rollback target does not match the pre-update deployment')
+    pause(state, 'Health failed three times; one automatic rollback attempted')
+    # Never use --apply: first verify that rollback actually queued recovery.
+    run('bootc', 'rollback')
+    current = status()
+    if not current.get('rollbackQueued'):
+        raise ValueError('Rollback was not queued; refusing to reboot')
+    if (current.get('staged') or identity(current.get('rollback')) != state['source'] or
+            identity(current.get('booted')) != state['target']):
+        raise ValueError('Deployment changed during rollback; refusing to reboot')
+    run('systemctl', 'reboot')
+
+
+def resume():
+    current = status()
+    settled(current)
+    identity(current.get('booted'))
+    if not health():
+        raise ValueError('Current deployment is unhealthy; refusing to resume updates')
+    save({'phase': 'idle'})
+    print('Update pause cleared; the next scheduled update may run', flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=('update', 'check', 'status', 'resume'))
+    args = parser.parse_args()
+    STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # Also persist first-use directory creation, not just state.json's rename.
+    for parent in (STATE_DIR.parent, STATE_DIR.parent.parent):
+        fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    with (STATE_DIR / 'lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = load()  # Corrupt state never authorizes an action.
+        if args.command == 'status':
+            print(json.dumps(state, indent=2))
+            return
+        try:
+            if args.command == 'update':
+                update(state)
+            elif args.command == 'check':
+                check(state)
+            else:
+                resume()
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+            # Reload to preserve the consumed attempt if an action already wrote it.
+            latest = load()
+            if latest['phase'] != 'paused' and (ENABLED.is_file() or latest['phase'] != 'idle'):
+                pause(latest, str(error))
+            raise
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print(f'dcore update guard: {error}', file=sys.stderr)
+        sys.exit(1)

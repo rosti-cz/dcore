@@ -4,6 +4,10 @@ bootc container lint --fatal-warnings
 test ! -e /etc/hostid
 test -x /usr/libexec/dcore/provision-hostid
 systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-hostid.service
+systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-update-check.service /usr/lib/systemd/system/dcore-update-check.timer
+test -x /usr/libexec/dcore/guarded-update
+test -x /usr/libexec/dcore/update-health
+[[ $(systemctl --root=/ is-enabled dcore-update-check.timer) == enabled ]]
 ostree --version | grep -q composefs
 systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-update.service /usr/lib/systemd/system/dcore-update.timer /usr/lib/systemd/system/dcore-grow-root.service /usr/lib/systemd/system/dcore-homebrew.service /usr/lib/systemd/system/dcore-network-bootstrap.service
 mapfile -t kernels < <(find /usr/lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n')

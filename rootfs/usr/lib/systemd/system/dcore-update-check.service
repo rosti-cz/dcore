@@ -1,0 +1,12 @@
+[Unit]
+Description=Check a guarded OS update and attempt at most one rollback
+ConditionPathExists=|/run/ostree-booted
+ConditionKernelCommandLine=|composefs
+ConditionKernelCommandLine=|composefs.digest
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/dcore/guarded-update check
+TimeoutStartSec=5min
+# No Restart or OnFailure reboot: an interrupted check requires manual recovery.

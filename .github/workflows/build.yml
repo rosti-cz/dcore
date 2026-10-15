@@ -59,6 +59,7 @@ jobs:
           python3 tests/test-finish-install.py
           python3 tests/test-network-bootstrap.py
           python3 tests/test-hostid.py
+          python3 tests/test-update-guard.py
       - id: config
         name: Read Debian release configuration
         run: |

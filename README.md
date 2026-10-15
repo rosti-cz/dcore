@@ -1345,7 +1345,9 @@ systemctl list-timers dcore-update.timer
 ```
 
 Every Sunday at 04:00 local time, plus a random delay of up to one hour, the
-service pulls the tag the host is already tracking using `bootc upgrade --apply`.
+service pulls the tag the host is already tracking through
+`/usr/libexec/dcore/guarded-update update`. Without rollback enabled this runs
+`bootc upgrade --apply`.
 bootc stages a new image and reboots when an update is available. An unchanged
 image does not cause a reboot. Missed runs are caught up after the next boot
 (`Persistent=true`), so enabling the timer can trigger an immediate update.
@@ -1374,6 +1376,70 @@ replace the image; add/change packages in the Containerfile and rebuild.
 The dpkg database lives under `/usr/lib/sysimage/dpkg`, with `/var/lib/dpkg`
 linked to it, so package inspection and APT in derivative container builds work.
 On installed hosts `/usr` is read-only; use bootc for system updates.
+
+### Optional one-shot automatic rollback
+
+Automatic rollback is **disabled by default** and needs a real VM
+update/rollback rehearsal before production use. Enable it on an installed
+image containing the update guard, before staging the next update:
+
+```sh
+sudo install -d -m 0755 /etc/dcore
+sudo touch /etc/dcore/auto-rollback-enabled
+```
+
+This protects updates performed by `dcore-update.service`. Direct `bootc`
+commands and `djust upgrade` bypass the guard. The guard checks the current
+deployment before staging an update, records both deployment identities in
+`/var/lib/dcore/update-guard/state.json`, and then requests a reboot. An
+unchanged image does not reboot. A staging failure or interruption pauses
+automatic updates for operator review.
+
+Five minutes after boot, `dcore-update-check.timer` checks an armed update.
+The default local check requires `ssh.service` and `systemd-networkd.service`
+to be active. It does not test Internet connectivity, optional services, or
+the system-wide failed-unit count. It also does not prove SSH is reachable
+from another machine. An executable `/etc/dcore/update-health` can replace
+the check; its exit contract is 0 for healthy, 1 for explicitly unhealthy,
+and any other exit for a checker error. Each invocation has a 30-second
+timeout. Checker errors and timeouts pause updates **without rebooting**.
+
+Three explicit failures, 30 seconds apart, allow **one** rollback to the
+exact pre-update deployment. Before invoking `bootc rollback`, the guard
+durably pauses automatic updates in `/var`, which is shared across
+deployments. It verifies the queued rollback before requesting a reboot.
+Neither the next boot nor another timer run clears that pause, even if the
+checker also fails on the old image. Interrupted checks, unknown deployment
+identities, missing rollback targets and state-write failures never authorize
+a recovery reboot. Disabling the opt-in flag does not bypass an existing pause.
+
+Inspect the state and journal after a pause:
+
+```sh
+sudo /usr/libexec/dcore/guarded-update status
+journalctl -u dcore-update.service -u dcore-update-check.service
+bootc status
+```
+
+After fixing the cause, resolving any queued deployment manually, and
+reviewing the tracked image, explicitly clear the pause:
+
+```sh
+sudo /usr/libexec/dcore/guarded-update resume
+```
+
+Resume requires a passing health check and no queued deployment change. It
+does not itself update or reboot, but the next scheduled update can retry
+the same image. Avoid clearing the pause until the bad image or checker is
+fixed. Do not delete the state file to recover.
+
+This is userspace recovery: it cannot recover a kernel/initramfs hang or a
+host that never reaches the check service. There is no watchdog reset or
+bootloader boot-count fallback. Rollback changes the OS deployment and its
+`/etc`; it does not undo application data changes under `/var`, Homebrew
+upgrades, or incompatible data migrations. Persistent state and locking
+protect this agent; other agents and manual `bootc` commands must not mutate
+deployments concurrently with it.
 
 ## Time, storage and containers
 

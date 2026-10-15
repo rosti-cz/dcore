@@ -10,5 +10,5 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bootc upgrade --apply
+ExecStart=/usr/libexec/dcore/guarded-update update
 TimeoutStartSec=2h
