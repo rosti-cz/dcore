@@ -101,6 +101,9 @@ if args[0]=='pull':
             install = next(c for c in self.calls() if c[0:2] == ['podman', 'run'])
             self.assertEqual(install[install.index('--filesystem') + 1], filesystem or 'ext4')
             self.assertEqual('--allow-missing-verity' in install, filesystem == 'xfs')
+            self.assertEqual('rootflags=compress=zstd:1' in install, filesystem == 'btrfs')
+            if filesystem == 'btrfs':
+                self.assertEqual(install[install.index('rootflags=compress=zstd:1') - 1], '--karg')
             self.assertIn('--wipe', install)
             self.assertIn('--generic-image', install)
             self.assertEqual(install[install.index('to-disk') + 1], self.loop)

@@ -224,7 +224,8 @@ def inside_install(args):
             run([formatter, '-f', mapped_device])
         else:
             run([formatter, '-f', mapped_device])
-        run(['mount', mapped_device, str(mountpoint)])
+        mount_options = ['-o', 'compress=zstd:1'] if args.filesystem == 'btrfs' else []
+        run(['mount', *mount_options, mapped_device, str(mountpoint)])
         root_mounted = True
         (mountpoint / 'boot').mkdir()
         run(['mount', '-o', 'umask=0077', esp, str(mountpoint / 'boot')])
@@ -248,6 +249,8 @@ def inside_install(args):
             command += ['--karg', 'dcore.grow-root=0']
         if args.filesystem == 'xfs':
             command.append('--allow-missing-verity')
+        if args.filesystem == 'btrfs':
+            command += ['--karg', 'rootflags=compress=zstd:1']
         run(command)
         # With a mapped root, GPT auto-discovery cannot remount the ESP like it
         # does on a plain disk. Provision writable, private ESP access explicitly.

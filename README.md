@@ -538,7 +538,8 @@ incus exec dcore-test -- bootc status
 ```
 
 The root filesystem defaults to ext4. `--filesystem` accepts `ext4`, `btrfs`,
-and `xfs`; XFS automatically gets the native composefs allow-missing-verity
+and `xfs`; Btrfs enables `compress=zstd:1` at boot via `rootflags`.
+XFS automatically gets the native composefs allow-missing-verity
 option. Release imports retain their prebuilt ext4 filesystem, so `--release`
 with `--filesystem btrfs` or `xfs` is rejected before creating resources.
 
@@ -937,6 +938,10 @@ When the script finishes, boot the installed disk on the target hardware in
 UEFI mode, find its DHCP address, and connect with the matching private key.
 The manual installation procedure below performs the same bootc installation
 if you prefer individual commands.
+
+Btrfs installs (`--filesystem btrfs`) enable `compress=zstd:1` at boot via
+`rootflags`, including encrypted installations. The encrypted installer also
+enables compression on its initial root mount before deploying the system.
 
 ### Encrypt the root disk
 

@@ -129,6 +129,7 @@ if [[ $encrypt == true ]]; then
         --filesystem "$filesystem" --image "$image" "${encryption_args[@]}"
 else
     filesystem_args=(--filesystem "$filesystem")
+    if [[ $filesystem == btrfs ]]; then filesystem_args+=(--karg rootflags=compress=zstd:1); fi
     container_args=(); access_args=()
     if [[ -n $ssh_key ]]; then
         container_args+=(-v "$ssh_key:/run/dcore-install.pub:ro")

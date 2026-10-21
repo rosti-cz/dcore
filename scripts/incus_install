@@ -189,6 +189,7 @@ else
     fi
     incus exec "$name" -- podman pull "$image"
     filesystem_args=(--filesystem "$filesystem")
+    if [[ $filesystem == btrfs ]]; then filesystem_args+=(--karg rootflags=compress=zstd:1); fi
     if [[ $filesystem == xfs ]]; then filesystem_args+=(--allow-missing-verity); fi
     incus exec "$name" -- podman run --rm --pull=never --privileged --pid=host --ipc=host \
         --security-opt label=disable -v /dev:/dev -v /var/lib/containers:/var/lib/containers \

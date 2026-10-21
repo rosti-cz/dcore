@@ -232,6 +232,9 @@ else: path.write_bytes(data)
                 install = next(c for c in self.calls() if 'to-disk' in c)
                 self.assertEqual(install[install.index('--filesystem') + 1], filesystem or 'ext4')
                 self.assertEqual('--allow-missing-verity' in install, filesystem == 'xfs')
+                self.assertEqual('rootflags=compress=zstd:1' in install, filesystem == 'btrfs')
+                if filesystem == 'btrfs':
+                    self.assertEqual(install[install.index('rootflags=compress=zstd:1') - 1], '--karg')
 
     def test_ssh_key_reaches_installing_vm(self):
         key = self.work / 'key.pub'

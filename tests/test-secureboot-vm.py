@@ -154,6 +154,9 @@ SERIAL
             (work/(label+'-checks.log')).write_text(checks.stdout + checks.stderr)
             assert 'SecureBoot enabled' in checks.stdout and '[integrity]' in checks.stdout, checks.stdout
             assert args.filesystem in checks.stdout.splitlines(), checks.stdout
+            if args.filesystem == 'btrfs':
+                options = guest('findmnt -n -o OPTIONS /sysroot').stdout.strip().split(',')
+                assert 'compress=zstd:1' in options, options
             if args.check_installer:
                 network=guest('cat /etc/systemd/network/10-dcore-dhcp.network; cat /var/lib/dcore/network-bootstrap.done; hostname; command -v netplan',check=False)
                 assert 'DHCP=yes' in network.stdout and 'dcore' in network.stdout, network.stdout

@@ -220,6 +220,12 @@ class InsideInstallTests(unittest.TestCase):
                 self.assertIn('--skip-fetch-check', install)
                 self.assertNotIn('--root-ssh-authorized-keys', install)
                 self.assertEqual('--allow-missing-verity' in install, filesystem == 'xfs')
+                self.assertEqual('rootflags=compress=zstd:1' in install, filesystem == 'btrfs')
+                if filesystem == 'btrfs':
+                    self.assertEqual(install[install.index('rootflags=compress=zstd:1') - 1], '--karg')
+                root_mount = next(c for c in commands if c[0] == 'mount')
+                self.assertEqual('compress=zstd:1' in root_mount, filesystem == 'btrfs')
+                self.assertLess(commands.index(root_mount), commands.index(install))
                 self.assertTrue(any(c[0] == 'mkfs.' + filesystem for c in commands))
                 change, params = next(c for c in calls if c[0][0] == 'chpasswd')
                 self.assertEqual(params['input'], b'core:core-fixture\n')
