@@ -126,6 +126,12 @@ func runMain() error {
 	}
 	host := o.mode == "host"
 	live := o.mode == "live"
+	if live {
+		if _, err := os.Stat(medium + "/dcore/installer.json"); errors.Is(err, os.ErrNotExist) {
+			_, err := parseOptions([]string{"--help"}, os.Stdout)
+			return err
+		}
+	}
 	if !host && os.Geteuid() != 0 {
 		return errors.New("run the installer as root (sudo dcore-installer install)")
 	}
