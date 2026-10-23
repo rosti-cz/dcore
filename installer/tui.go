@@ -327,6 +327,10 @@ func (m model) View() string {
 	s := m.engine.Snapshot()
 	var b strings.Builder
 	b.WriteString(style.Render("dcore installer — terminal and web share this session") + "\n")
+	if m.engine.source.Tracking != "" {
+		b.WriteString("Image: " + m.engine.source.Tracking + "\n")
+		b.WriteString("Pinned: " + m.engine.source.Source + "\n")
+	}
 	if m.web != nil {
 		addresses := m.web.Addresses()
 		if len(addresses) == 0 {

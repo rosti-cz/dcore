@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/term"
@@ -19,8 +18,8 @@ import (
 	"time"
 )
 
-func webListener(live bool, directory string) (net.Listener, error) {
-	if live {
+func webListener(privileged bool, directory string) (net.Listener, error) {
+	if privileged {
 		return net.Listen("tcp", ":80")
 	}
 	socket := filepath.Join(directory, "listener.sock")
@@ -111,47 +110,70 @@ func webListener(live bool, directory string) (net.Listener, error) {
 	return result, err
 }
 func runMain() error {
-	host := flag.Bool("host", false, "install from the current booted dcore host")
-	check := flag.Bool("version", false, "print installer implementation")
-	flag.Parse()
-	if *check {
-		fmt.Println("dcore installer (Go / Bubble Tea)")
+	o, err := parseOptions(os.Args[1:], os.Stdout)
+	if err != nil {
+		return err
+	}
+	if o.help {
 		return nil
 	}
-	live := !*host
-	if live && os.Geteuid() != 0 {
-		return errors.New("live installer requires root")
+	if o.version {
+		fmt.Printf("dcore installer %s (Go / Bubble Tea)\n", installerVersion)
+		return nil
 	}
-	if *host && os.Geteuid() == 0 {
+	if o.operation != "" {
+		return internalBackend(o.operation)
+	}
+	host := o.mode == "host"
+	live := o.mode == "live"
+	if !host && os.Geteuid() != 0 {
+		return errors.New("run the installer as root (sudo dcore-installer install)")
+	}
+	if host && os.Geteuid() == 0 {
 		return errors.New("run djust install as an ordinary user, without sudo")
 	}
 	if !term.IsTerminal(os.Stdin.Fd()) {
 		return errors.New("installer requires an interactive terminal")
 	}
 	unix.Setrlimit(unix.RLIMIT_CORE, &unix.Rlimit{})
-	directory := "/run/dcore-installer"
-	if *host {
+	directory := "/run/dcore-installer-" + o.mode
+	var backend Backend
+	if host {
 		if err := exec.Command("/usr/bin/sudo", "-v").Run(); err != nil {
 			return err
 		}
 		directory = "/run/user/" + strconv.Itoa(os.Geteuid()) + "/dcore-installer"
+		backend = commandBackend{}
+	} else {
+		b, err := openNativeBackend(o.mode, o.image, 0)
+		if err != nil {
+			return err
+		}
+		if err = b.preflight(false); err != nil {
+			return err
+		}
+		if o.mode == "online" {
+			directory = filepath.Join(b.directory, "interface")
+		}
+		backend = b
 	}
-	backend := commandBackend{live: live}
-	var source map[string]any
+	var source imageSource
 	if err := backend.Query("source", nil, &source); err != nil {
 		return err
 	}
+	fmt.Fprintf(os.Stderr, "Installation source: %s (updates: %s)\n", source.Source, source.Tracking)
 	engine, err := newEngine(directory, backend)
 	if err != nil {
 		return err
 	}
 	defer engine.Close()
+	engine.source = source
 	engine.state.CanReboot = live
 	web, err := NewWeb(engine)
 	if err != nil {
 		return err
 	}
-	listener, err := webListener(live, directory)
+	listener, err := webListener(!host, directory)
 	var server *http.Server
 	webError := ""
 	if err != nil {

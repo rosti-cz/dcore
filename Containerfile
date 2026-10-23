@@ -30,11 +30,12 @@ RUN chafa --format symbols --colors 16/8 --symbols block --size 36x12 \
     --animate off /logo.png > /logo.ansi
 
 FROM docker.io/library/golang:1.26.9-trixie AS installer-builder
+ARG IMAGE_REVISION=local
 WORKDIR /build
 COPY installer/go.mod installer/go.sum ./
 RUN go mod download
 COPY installer/ ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /dcore-installer .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.installerVersion=${IMAGE_REVISION}" -o /dcore-installer .
 
 FROM base AS system
 ARG DEBIAN_RELEASE

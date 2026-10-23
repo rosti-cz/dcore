@@ -149,6 +149,69 @@ completed deployment and credentials stay in memory. Host mode never offers
 an automatic reboot of the current server. The wizard's rescue shell runs as
 the caller; use sudo there if administration is needed.
 
+### Universal installer binary
+
+GitHub releases also provide `dcore-installer-linux-amd64`. Download it, make it
+executable, and run it on an amd64 Linux host booted with UEFI:
+
+```sh
+chmod +x dcore-installer-linux-amd64
+sudo ./dcore-installer-linux-amd64 install
+sudo ./dcore-installer-linux-amd64 install --branch stable
+sudo ./dcore-installer-linux-amd64 install --branch testing
+sudo ./dcore-installer-linux-amd64 install --image ghcr.io/rosti-cz/dcore:trixie
+# Explicit sha256 digest references are also accepted by --image.
+```
+
+`stable` is the default tag in `ghcr.io/rosti-cz/dcore`. Other branch names select
+image tags; they must exist in that registry. `--branch` and `--image` are
+mutually exclusive. The installer resolves a tag to a digest before disk
+selection and records it for retries. Updates on the installed system follow
+the original tag; an explicitly supplied digest stays pinned. The selected tag
+and pinned source are shown in both interfaces. The image must be an amd64
+bootc image compatible with dcore's installation and account layout.
+
+The binary bundles its container helpers and public Secure Boot certificate.
+It needs no host Python installation, checkout, or separately installed dcore
+scripts. Its remaining host dependencies are:
+
+| Dependency | Required for |
+| --- | --- |
+| Podman with its OCI runtime and supporting packages | All installations; rootful storage must use `/var/lib/containers/storage`. |
+| util-linux (`lsblk`, `findmnt`) | Disk discovery and mount inspection. |
+| CA certificates, DNS and registry access | Downloading the online source image. |
+| kmod (`modprobe`) and matching kernel modules | Loading a selected filesystem driver if it is not already available; loading `dm-crypt` for encryption. |
+| dmsetup and udev (`udevadm`, device-mapper notification rules) | Encrypted installations. |
+| mokutil and openssl | Optional Secure Boot certificate enrollment. |
+| Bash | Optional rescue shell. |
+
+For Debian/Ubuntu, install the base dependencies with
+`sudo apt install podman util-linux ca-certificates`; add
+`kmod dmsetup udev` for encryption and `mokutil openssl` for key enrollment.
+The host kernel must support the selected filesystem and the bootc/composefs
+stack, plus device-mapper encryption when selected. Run outside containers, in
+the host mount namespace. Allow at least 10 GiB free staging storage when
+downloading an uncached image; additional capacity is checked against image size
+before deployment. Staging must be separate from the destination disk.
+
+The installer checks host dependencies at startup and repeats relevant checks
+before deployment. Encryption dependencies are checked when encryption is
+selected; enrollment tools are checked when enrollment is requested. It also
+checks installation tools inside the source image before allowing deployment.
+Missing requirements stop the operation before erasing the destination.
+The source image supplies Python, bootc, cryptsetup, partitioning tools,
+filesystem formatters and account configuration tools inside the container.
+
+Offline installation remains available by booting the installer ISO. Its
+launcher runs the same binary without the `install` subcommand and uses the
+bundled manifest and OCI archive, with no registry access. `djust install`
+continues to install the exact booted image through the ordinary-user mode.
+Checkpoints last for the current boot: restarting the same mode resumes its
+pinned source and completed stages; rebooting clears the session.
+
+For development, run `go generate ./...` in `installer/` after changing
+`scripts/lib/*.py` or the public certificate, then commit the generated assets.
+
 The `djust install plain` fallback reuses the block installer's disk identity
 and busy-device checks. Only validated public keys or `authorized_keys` from `/root/.ssh` or
 `/var/home/core/.ssh` are offered; private keys are never copied. The final
@@ -421,12 +484,15 @@ again. Failure during OS deployment can leave an incomplete disk and requires a
 fresh erase confirmation before reinstalling. Upgrade commands similarly offer
 to retry only their failed substep in an interactive terminal.
 
-Checkpoints and logs live in the private `/run/dcore-installer` directory for the
+Interface checkpoints and logs live in the private `/run/dcore-installer-live` directory for the
 current live boot. Restarting the interface restores progress and asks for the
 passwords again; passwords are held in memory and are never saved in checkpoints
 or logs. A reboot of the live environment loses these checkpoints. Reboot is
 available after all installation stages succeed. **Rescue shell** is available
 while no installation operation is running.
+Privileged backend checkpoints live under `/run/dcore-install-go/live`;
+online installations use `/run/dcore-install-go/online/SOURCE_HASH`, including
+an `interface` subdirectory. Each requested image reference has its own session.
 
 The installer serves an embedded web interface on **port 80** while it runs.
 Its terminal screen prints reachable IP addresses and a randomly generated

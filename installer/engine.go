@@ -66,19 +66,15 @@ type Backend interface {
 	Query(string, any, any) error
 	Phase(string, any, func(string)) error
 }
-type commandBackend struct{ live bool }
+type commandBackend struct{}
 
 func (b commandBackend) command(operation string) *exec.Cmd {
-	args := []string{"/usr/libexec/dcore/installer/host-backend.py"}
-	if b.live {
-		args = append(args, "--live")
+	executable, err := os.Executable()
+	if err != nil {
+		executable = "/usr/libexec/dcore/installer/dcore-installer"
 	}
-	args = append(args, operation)
-	if !b.live {
-		args = append([]string{"--non-interactive", "--"}, args...)
-		return exec.Command("/usr/bin/sudo", args...)
-	}
-	return exec.Command(args[0], args[1:]...)
+	args := []string{executable, "--host", "--internal-backend", operation}
+	return exec.Command("/usr/bin/sudo", append([]string{"--non-interactive", "--"}, args...)...)
 }
 func (b commandBackend) Query(operation string, value any, result any) error {
 	cmd := b.command(operation)
@@ -137,6 +133,7 @@ func (b commandBackend) Phase(operation string, value any, log func(string)) err
 var phases = []string{"load", "validate", "install", "configure", "verify", "cleanup"}
 
 type Engine struct {
+	source     imageSource
 	mu         sync.Mutex
 	state      Snapshot
 	backend    Backend

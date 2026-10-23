@@ -51,12 +51,15 @@ jobs:
       - name: Test Go installer, web authentication, and recovery
         run: |
           cd installer
+          go generate ./...
+          git diff --exit-code -- assets_generated.go
           go test -race ./...
           go vet ./...
       - name: Test privileged installer and first-boot networking
         run: |
           python3 tests/test-host-installer.py
           python3 tests/test-finish-install.py
+          python3 tests/test-installer-preflight.py
           python3 tests/test-network-bootstrap.py
           python3 tests/test-hostid.py
           python3 tests/test-update-guard.py

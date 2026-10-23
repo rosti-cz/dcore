@@ -326,7 +326,7 @@ func (w *Web) state(rw http.ResponseWriter, r *http.Request) {
 		webError(rw, 500, err.Error())
 		return
 	}
-	writeJSON(rw, 200, map[string]any{"snapshot": w.engine.Snapshot(), "disks": disks, "csrf": session.csrf})
+	writeJSON(rw, 200, map[string]any{"snapshot": w.engine.Snapshot(), "disks": disks, "csrf": session.csrf, "source": w.engine.source})
 }
 
 func (w *Web) start(rw http.ResponseWriter, r *http.Request) {
