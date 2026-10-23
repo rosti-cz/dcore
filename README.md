@@ -212,6 +212,17 @@ pinned source and completed stages; rebooting clears the session.
 For development, run `go generate ./...` in `installer/` after changing
 `scripts/lib/*.py` or the public certificate, then commit the generated assets.
 
+With Go Task installed, build the static binary and checksum locally with:
+
+```sh
+task dcore-installer
+# Optional overrides; "task installer" is an alias.
+task dcore-installer VERSION=v0.1.0 OUT_DIR=./dist
+```
+
+The task needs Go, Python 3 and sha256sum. It regenerates bundled helpers and
+writes `dist/dcore-installer-linux-amd64` and `dist/installer-SHA256SUMS`.
+
 The `djust install plain` fallback reuses the block installer's disk identity
 and busy-device checks. Only validated public keys or `authorized_keys` from `/root/.ssh` or
 `/var/home/core/.ssh` are offered; private keys are never copied. The final
@@ -518,6 +529,19 @@ sudo scripts/build-installer-iso.sh \
   ghcr.io/rosti-cz/dcore@sha256:RELEASE_DIGEST \
   ghcr.io/rosti-cz/dcore:trixie v0.1.0 trixie ./dist
 ```
+
+The equivalent Taskfile target invokes sudo when needed:
+
+```sh
+task iso SOURCE_IMAGE=ghcr.io/rosti-cz/dcore@sha256:RELEASE_DIGEST \
+  TRACKING_IMAGE=ghcr.io/rosti-cz/dcore:trixie VERSION=v0.1.0
+```
+
+`SOURCE_IMAGE` must identify a published, signed image by digest. The defaults
+are `TRACKING_IMAGE=ghcr.io/rosti-cz/dcore:stable`, `DEBIAN_RELEASE=trixie`,
+`OUT_DIR=./dist`, and a version from `git describe --tags --always --dirty`.
+The ISO uses the installer binary from the specified source image; building a
+local binary does not replace the binary in that image.
 
 The builder uses a disposable privileged Debian container with `live-build`.
 The manifest lists the supported filesystems and encryption modes; it describes

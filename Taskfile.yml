@@ -1,0 +1,63 @@
+version: '3'
+
+vars:
+  OUT_DIR: '{{.ROOT_DIR}}/dist'
+  VERSION:
+    sh: git describe --tags --always --dirty
+  DEBIAN_RELEASE: trixie
+  TRACKING_IMAGE: ghcr.io/rosti-cz/dcore:stable
+
+tasks:
+  default:
+    cmds:
+      - task --list
+
+  dcore-installer:
+    aliases: [installer]
+    desc: Build the static Linux amd64 installer and its checksum in dist/
+    dir: '{{.ROOT_DIR}}'
+    env:
+      DCORE_OUT_DIR: '{{.OUT_DIR}}'
+      DCORE_VERSION: '{{.VERSION}}'
+      CGO_ENABLED: '0'
+      GOOS: linux
+      GOARCH: amd64
+    preconditions:
+      - sh: command -v go && command -v python3 && command -v sha256sum
+        msg: Install Go, Python 3 and sha256sum to build the installer.
+    cmds:
+      - |
+        set -eu
+        mkdir -p "$DCORE_OUT_DIR"
+        dcore_output_abs=$(cd "$DCORE_OUT_DIR" && pwd)
+        cd installer
+        go generate ./...
+        go build -trimpath -ldflags="-s -w -X main.installerVersion=$DCORE_VERSION" \
+          -o "$dcore_output_abs/dcore-installer-linux-amd64" .
+        cd "$dcore_output_abs"
+        sha256sum dcore-installer-linux-amd64 > installer-SHA256SUMS
+
+  iso:
+    desc: Build an offline ISO from a signed image (requires SOURCE_IMAGE=registry/repo@sha256:digest)
+    dir: '{{.ROOT_DIR}}'
+    requires:
+      vars: [SOURCE_IMAGE]
+    env:
+      DCORE_SOURCE_IMAGE: '{{.SOURCE_IMAGE}}'
+      DCORE_TRACKING_IMAGE: '{{.TRACKING_IMAGE}}'
+      DCORE_VERSION: '{{.VERSION}}'
+      DCORE_DEBIAN_RELEASE: '{{.DEBIAN_RELEASE}}'
+      DCORE_OUT_DIR: '{{.OUT_DIR}}'
+    preconditions:
+      - sh: command -v podman && command -v gzip && command -v python3 && command -v sha256sum
+        msg: Install Podman, gzip, Python 3 and sha256sum to build the ISO.
+    cmds:
+      - |
+        set -eu
+        if [ "$(id -u)" -eq 0 ]; then
+          scripts/build-installer-iso.sh "$DCORE_SOURCE_IMAGE" "$DCORE_TRACKING_IMAGE" \
+            "$DCORE_VERSION" "$DCORE_DEBIAN_RELEASE" "$DCORE_OUT_DIR"
+        else
+          sudo scripts/build-installer-iso.sh "$DCORE_SOURCE_IMAGE" "$DCORE_TRACKING_IMAGE" \
+            "$DCORE_VERSION" "$DCORE_DEBIAN_RELEASE" "$DCORE_OUT_DIR"
+        fi
