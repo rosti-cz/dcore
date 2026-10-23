@@ -154,16 +154,16 @@ jobs:
           go test -race ./...
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
             -ldflags="-s -w -X main.installerVersion=$RELEASE_TAG" \
-            -o ../dist/dcore-installer-linux-amd64 .
-          ../dist/dcore-installer-linux-amd64 --version
+            -o "../dist/dcore-installer-$RELEASE_TAG-linux-amd64" .
+          "../dist/dcore-installer-$RELEASE_TAG-linux-amd64" --version
           cd ../dist
-          sha256sum dcore-installer-linux-amd64 > installer-SHA256SUMS
+          sha256sum "dcore-installer-$RELEASE_TAG-linux-amd64" > installer-SHA256SUMS
       - name: Upload universal installer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: gh release upload "$RELEASE_TAG" dist/dcore-installer-linux-amd64 --repo "$REPOSITORY" --clobber
+        run: gh release upload "$RELEASE_TAG" "dist/dcore-installer-$RELEASE_TAG-linux-amd64" --repo "$REPOSITORY" --clobber
       - uses: actions/upload-artifact@v7
         with:
           name: release-checksums-installer

@@ -151,15 +151,16 @@ the caller; use sudo there if administration is needed.
 
 ### Universal installer binary
 
-GitHub releases also provide `dcore-installer-linux-amd64`. Download it, make it
+GitHub releases also provide `dcore-installer-VERSION-linux-amd64` (for example,
+`dcore-installer-v0.9.1-linux-amd64`). Download it, make it
 executable, and run it on an amd64 Linux host booted with UEFI:
 
 ```sh
-chmod +x dcore-installer-linux-amd64
-sudo ./dcore-installer-linux-amd64 install
-sudo ./dcore-installer-linux-amd64 install --branch stable
-sudo ./dcore-installer-linux-amd64 install --branch testing
-sudo ./dcore-installer-linux-amd64 install --image ghcr.io/rosti-cz/dcore:trixie
+chmod +x dcore-installer-v0.9.1-linux-amd64
+sudo ./dcore-installer-v0.9.1-linux-amd64 install
+sudo ./dcore-installer-v0.9.1-linux-amd64 install --branch stable
+sudo ./dcore-installer-v0.9.1-linux-amd64 install --branch testing
+sudo ./dcore-installer-v0.9.1-linux-amd64 install --image ghcr.io/rosti-cz/dcore:trixie
 # Explicit sha256 digest references are also accepted by --image.
 ```
 
