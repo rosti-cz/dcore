@@ -54,7 +54,7 @@ apt-get install -y --no-install-recommends \
     "systemd-boot-efi-${kernel_arch}-signed" shim-signed mokutil sbsigntool openssl \
     iproute2 libnss-resolve libnss-myhostname openssh-server skopeo wireguard \
     systemd systemd-sysv systemd-boot systemd-boot-efi systemd-resolved \
-    systemd-timesyncd smartmontools xfsprogs libostree-1-1 ostree dracut kmod podman sudo \
+    systemd-timesyncd smartmontools ipmitool nvme-cli sysstat tcpdump lm-sensors xfsprogs libostree-1-1 ostree dracut kmod podman sudo \
     "zfs-dkms/${DEBIAN_RELEASE}-backports" "zfsutils-linux/${DEBIAN_RELEASE}-backports" \
     "zfs-zed/${DEBIAN_RELEASE}-backports" "zfs-dracut/${DEBIAN_RELEASE}-backports" incus incus-agent \
     fish fastfetch fzf locales locales-all tzdata htop vim nmap git tmux wget curl jq unzip iotop ncdu rsync httpie bat \

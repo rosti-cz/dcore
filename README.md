@@ -82,7 +82,7 @@ Release downloads are checked against upstream SHA-256 checksums.
   SSH keys for root and core.
 - Shell and terminal: fish (root/core default), fastfetch, htop, vim, tmux, iotop, ncdu, duf.
 - Networking and APIs: nmap, wget, curl, HTTPie (`http`/`https`),
-  iputils-tracepath (`tracepath`), rsync, rclone.
+  iputils-tracepath (`tracepath`), tcpdump, rsync, rclone.
 - Development and files: git, jq, unzip, bat (`batcat`), ripgrep (`rg`),
   bzip2, zstd, build-essential.
 - Containers: Incus (Zabbly stable), Incus guest-agent integration (Debian), Docker (`docker.io` and `docker-cli`),
@@ -92,7 +92,10 @@ Release downloads are checked against upstream SHA-256 checksums.
   `openvswitch-common`).
 - System: bootc, OSTree, sudo, OpenSSH server, systemd-networkd, systemd-resolved,
   systemd-timesyncd (enabled), fstrim timer (enabled).
-- Storage: SMART diagnostics and monitoring (`smartmontools`, `smartctl`, `smartd`), Debian ZFS (`zfsutils-linux`, `zfs-zed`, `zfs-dracut`, and
+- Performance diagnostics: sysstat (`iostat`, `mpstat`, `pidstat`, `sar`).
+- Hardware management: IPMI diagnostics and BMC control (`ipmitool`),
+  temperatures, fan speeds and voltages (`lm-sensors`, `sensors`).
+- Storage: NVMe management (`nvme-cli`), SMART diagnostics and monitoring (`smartmontools`, `smartctl`, `smartd`), Debian ZFS (`zfsutils-linux`, `zfs-zed`, `zfs-dracut`, and
   `zfs-dkms` compiled for the image kernel), parted, `btrfs-progs` (`btrfs`), ext4, XFS and FAT utilities, cryptsetup and systemd-cryptsetup.
 
 The full package/version inventory is `/usr/share/dcore/packages.tsv` inside
