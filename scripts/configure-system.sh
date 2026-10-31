@@ -37,12 +37,13 @@ install -d /usr/lib/sysusers.d
     for group in _ssh docker rdma tss; do
         if getent group "$group" > /dev/null; then printf 'g %s -\n' "$group"; fi
     done
-    if getent passwd dnsmasq > /dev/null; then
-        IFS=: read -r _ _ _ primary_gid _ user_home user_shell < <(getent passwd dnsmasq)
+    for account in dnsmasq tcpdump; do
+        if ! getent passwd "$account" > /dev/null; then continue; fi
+        IFS=: read -r _ _ _ primary_gid _ user_home user_shell < <(getent passwd "$account")
         primary_group=$(getent group "$primary_gid" | cut -d: -f1)
         printf 'g %s -\n' "$primary_group"
-        printf 'u dnsmasq -:%s "Service account" %s %s\n' "$primary_group" "$user_home" "$user_shell"
-    fi
+        printf 'u %s -:%s "Service account" %s %s\n' "$account" "$primary_group" "$user_home" "$user_shell"
+    done
 } > /usr/lib/sysusers.d/10-dcore-extra.conf
 
 # dracut's TPM stack creates this account while generating the initramfs.
