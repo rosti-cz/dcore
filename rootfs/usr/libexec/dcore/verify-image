@@ -1,9 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 bootc container lint --fatal-warnings
+# Netplan's generator can exist without its CLI and create OVS cleanup jobs.
+test ! -e /usr/lib/systemd/system-generators/netplan
+if command -v netplan > /dev/null; then
+    echo 'Netplan CLI must not be installed' >&2
+    exit 1
+fi
+[[ $(readlink /etc/systemd/system-generators/netplan) == /dev/null ]]
+[[ $(systemctl --root=/ is-enabled netplan-ovs-cleanup.service 2>/dev/null || true) == masked ]]
+[[ $(systemctl --root=/ is-enabled systemd-networkd.service) == enabled ]]
 test ! -e /etc/hostid
 test -x /usr/libexec/dcore/provision-hostid
 systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-hostid.service
+systemd-analyze verify --man=no zfs.target zfs-import.target zfs-import-scan.service zfs-load-keys.service zfs-mount.service
+for unit in zfs.target zfs-import.target zfs-import-scan.service zfs-load-keys.service zfs-mount.service zfs-zed.service; do
+    [[ $(systemctl --root=/ is-enabled "$unit") == enabled ]]
+done
+[[ $(systemctl --root=/ is-enabled zfs-import-cache.service) == disabled ]]
 systemd-analyze verify --man=no /usr/lib/systemd/system/dcore-update-check.service /usr/lib/systemd/system/dcore-update-check.timer
 test -x /usr/libexec/dcore/guarded-update
 test -x /usr/libexec/dcore/update-health

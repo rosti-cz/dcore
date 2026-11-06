@@ -1,5 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Networking is configured directly by networkd. Debian splits the generator
+# from the Netplan CLI, so checking for the `netplan` command misses it.
+mapfile -t netplan_packages < <(
+    dpkg-query -W -f='${binary:Package} ${db:Status-Status}\n' \
+        netplan.io netplan-generator python3-netplan libnetplan1 2>/dev/null |
+        awk '$2 == "installed" || $2 == "config-files" { print $1 }' || true
+)
+if [[ ${#netplan_packages[@]} -gt 0 ]]; then
+    apt-get purge -y -- "${netplan_packages[@]}"
+    dpkg-query -W -f='${binary:Package}\t${Version}\n' > /usr/share/dcore/packages.tsv
+fi
 # Preserve the packaged utility for read commands; install/update maintain shim.
 if [[ ! -f /usr/libexec/dcore/bootctl.real ]]; then
     mv /usr/bin/bootctl /usr/libexec/dcore/bootctl.real
@@ -12,6 +23,10 @@ systemctl enable dcore-update-check.timer
 usermod --shell /usr/bin/fish root
 usermod --shell /usr/bin/fish core
 systemctl enable systemd-networkd systemd-resolved systemd-timesyncd ssh fstrim.timer dcore-grow-root.service dcore-homebrew.service dcore-network-bootstrap.service dcore-hostid.service
+# Scan on every boot, even when a pool cache exists. Do not run cache import in
+# parallel with discovery; keys and mounts must wait for the complete scan.
+systemctl disable zfs-import-cache.service
+systemctl enable zfs.target zfs-import.target zfs-import-scan.service zfs-load-keys.service zfs-mount.service zfs-zed.service
 # Disable all competing image/APT update schedules, including upstream defaults.
 for unit in dcore-update.timer bootc-fetch-apply-updates.timer bootc-fetch-updates.timer apt-daily.timer apt-daily-upgrade.timer; do
     if [[ -f "/usr/lib/systemd/system/$unit" ]]; then systemctl --root=/ disable "$unit"; fi

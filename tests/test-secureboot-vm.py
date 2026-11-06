@@ -219,6 +219,9 @@ SERIAL
                 '''
                 storage = guest('bash -eu -c ' + shlex.quote(pool_test))
                 (work/(label+'-zfs-storage.log')).write_text(storage.stdout + storage.stderr)
+                boot_test = (ROOT/'tests/test-zfs-boot.sh').read_text()
+                boot_storage = guest('sudo env DCORE_DISPOSABLE_VM_TEST=1 bash -c ' + shlex.quote(boot_test))
+                (work/(label+'-zfs-boot.log')).write_text(boot_storage.stdout + boot_storage.stderr)
                 # Reject a signature-stripped SPL module after unloading ZFS.
                 guest('sudo systemctl stop zfs-zed.service; sudo modprobe -r zfs; test ! -d /sys/module/spl')
                 program = "import lzma; from pathlib import Path; p=next(Path('/usr/lib/modules').glob('*/updates/dkms/spl.ko.xz')); d=lzma.decompress(p.read_bytes()); m=b'~Module signature appended~\\n'; e=len(d)-len(m)-12; n=int.from_bytes(d[e+8:e+12],'big'); Path('/var/tmp/unsigned-spl.ko').write_bytes(d[:e-n])"

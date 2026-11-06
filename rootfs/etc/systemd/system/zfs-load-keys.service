@@ -1,12 +1,13 @@
 [Unit]
 Description=Load ZFS encryption keys
 DefaultDependencies=no
-After=zfs-import.target
+After=zfs-import.target systemd-remount-fs.service
 Before=zfs-mount.service
-Wants=zfs-import.target
+Requires=zfs-import.target
 
 [Service]
 Type=oneshot
+RemainAfterExit=yes
 ExecStart=/usr/sbin/zfs load-key -a
 
 [Install]

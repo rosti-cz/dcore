@@ -145,6 +145,12 @@ jobs:
           sudo modprobe btrfs
           sudo modprobe dm_crypt
           sudo python3 tests/test-secureboot-vm.py --image "$IMAGE:$DEBIAN_RELEASE" --filesystem btrfs --encrypt --check-installer
+      - name: Test ZFS discovery, keys and mounts across reboots
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 ovmf
+          sudo modprobe loop
+          sudo python3 tests/test-zfs-qemu.py --image "$IMAGE:$DEBIAN_RELEASE"
       - name: Test root partition and filesystem growth
         run: |
           sudo modprobe loop

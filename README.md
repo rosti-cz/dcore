@@ -352,9 +352,10 @@ stay in `/var`; `/usr` remains managed by bootc and read-only.
 ## Open vSwitch
 
 Open vSwitch is installed from Debian. Its switching service is disabled by
-default so an administrator can configure it before starting it. Netplan
-may start the OVS database service for cleanup even when switching is disabled;
-its database and logs live in persistent `/var`. For Open vSwitch:
+default so an administrator can configure it before starting it. Its database
+and logs live in persistent `/var`. Networking uses native systemd-networkd
+configuration. Netplan packages are removed during image configuration, and its
+generator and OVS cleanup service are masked. For Open vSwitch:
 
 ```bash
 sudo systemctl enable --now openvswitch-switch.service
@@ -1572,6 +1573,42 @@ On the first installed boot, `dcore-hostid.service` creates a unique
 and image upgrades; generic images contain no host ID. Existing host IDs are
 kept. Hosts affected by earlier images need their original host ID restored
 before upgrading to an image that removes the build-generated default.
+
+Clean installations enable ZFS discovery, key loading and mounting explicitly.
+Every boot scans `/dev/disk/by-id` and `/dev` directly, bypassing libblkid and
+the pool import cache. This finds ZFS labels even when old RAID signatures
+misclassify a partition or `/dev/sdX` names change. Discovery waits for udev,
+kernel modules, encrypted block devices and the persistent host ID. Pools are
+imported without mounting; encryption keys load next, then datasets mount.
+Key failures remain visible in `zfs-load-keys.service`; healthy datasets can
+still mount when a different encryption root's key is unavailable.
+After restoring a missing key file, run
+`sudo systemctl restart zfs-load-keys.service zfs-mount.service` to retry loading
+and mounting. Restarting also retries datasets skipped by an earlier mount pass.
+Incus retains its packaged startup behavior and can recover instances when
+their storage becomes available. Pool imports retain ZFS's normal ownership
+checks; missing devices and pools requiring forced recovery still need
+administrator attention.
+
+For unattended encrypted data pools, configure each encryption root's
+`keylocation=file:///...` to an existing, root-readable key on the system disk
+(for example under `/etc/zfs/keys`, with directory mode 0700 and file mode 0600).
+The image supplies no keys. Keep keys available before data-pool mounting;
+keys stored inside the pool they unlock cannot work. Prompt-based keys require
+manual unlocking; network keys or keys on separate filesystems need additional
+service dependencies. ZFS mount-generator key services run after the bulk
+loader to avoid loading the same key concurrently.
+
+To test a locally built image on disposable QEMU disks, run
+`sudo python3 tests/test-zfs-qemu.py --image LOCAL_IMAGE` on a development host
+with Podman, QEMU, OVMF, loop devices and SSH installed. The test installs a
+fresh system and verifies encrypted mirror import, key loading and readable
+data across normal boots, absent/stale caches, swapped device names and obsolete
+MD signatures, plus missing/wrong-key failures, healthy-pool isolation and Incus
+container recovery when its encrypted storage becomes available. Logs and virtual disks
+remain under `dist/zfs-boot-qemu-*`. Secure Boot enforcement is tested separately
+by `tests/test-secureboot-vm.py`.
+
 Zabbly's payload stays at `/opt/incus`, with `/opt` kept as a real directory in
 the immutable composefs image so Incus updates atomically with the OS. LXC rejects
 symlinks in its rootfs mount path (`/opt/incus/lib/lxc/rootfs`); symlinking `/opt`
