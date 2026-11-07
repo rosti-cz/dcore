@@ -32,6 +32,8 @@ jobs:
             -v "$GITHUB_WORKSPACE:/source:ro" \
             -e "DEBIAN_RELEASE=$release" -e "INCUS_CHANNEL=$channel" \
             "docker.io/library/debian:$release" bash /source/tests/test-package-selection.sh
+      - name: Test Debian chunk component ownership
+        run: sudo python3 tests/test-chunk-components.py
       - name: Test installer filesystem selection and disk safeguards
         run: |
           sudo modprobe loop
@@ -172,6 +174,55 @@ jobs:
           if [[ "$FLOATING_TAGS" == true ]]; then
             for tag in stable latest; do
               sudo podman tag "$IMAGE:$DEBIAN_RELEASE" "$IMAGE:$tag"
+              sudo podman push "$IMAGE:$tag"
+            done
+          fi
+      - name: Verify experimental chunking on unpublished builds
+        if: github.event_name == 'pull_request' || github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+        run: sudo scripts/build-chunked-image.sh "$IMAGE:$DEBIAN_RELEASE" "$IMAGE:$DEBIAN_RELEASE-chunked"
+
+  chunked:
+    needs: [configure, build]
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, linux, x64, dcore]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.configure.outputs.matrix) }}
+    env:
+      REPOSITORY: ${{ github.repository }}
+      DEBIAN_RELEASE: ${{ matrix.release }}
+      FLOATING_TAGS: ${{ matrix.floating }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fetch the published source image
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          IMAGE="ghcr.io/${REPOSITORY,,}"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          printf '%s' "$REGISTRY_TOKEN" | sudo podman login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          trap 'sudo podman logout ghcr.io' EXIT
+          sudo podman pull "$IMAGE:$DEBIAN_RELEASE"
+          DIGEST=$(sudo podman image inspect --format '{{.Digest}}' "$IMAGE:$DEBIAN_RELEASE")
+          echo "SOURCE_IMAGE=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
+      - name: Build and verify experimental chunked image
+        run: sudo scripts/build-chunked-image.sh "$SOURCE_IMAGE" "$IMAGE:$DEBIAN_RELEASE-chunked"
+      - name: Publish experimental chunked tags
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | sudo podman login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          trap 'sudo podman logout ghcr.io' EXIT
+          sudo podman push "$IMAGE:$DEBIAN_RELEASE-chunked"
+          if [[ "$FLOATING_TAGS" == true ]]; then
+            for tag in stable-chunked latest-chunked; do
+              sudo podman tag "$IMAGE:$DEBIAN_RELEASE-chunked" "$IMAGE:$tag"
               sudo podman push "$IMAGE:$tag"
             done
           fi

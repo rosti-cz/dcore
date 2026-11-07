@@ -368,11 +368,49 @@ The [GitHub repository](https://github.com/rosti-cz/dcore) automatically builds
 and publishes OCI images from the `main` branch every day at 02:23 UTC. Builds
 also run on pushes to `main`, on pull requests, and on manual dispatch.
 GitHub releases distribute disk images and the offline installer; daily OCI builds do not
-require a release. Successful `main` builds publish the same image to:
+require a release. Image tags under `ghcr.io/rosti-cz/dcore` have two variants:
 
-- `ghcr.io/rosti-cz/dcore:trixie`
-- `ghcr.io/rosti-cz/dcore:stable`
-- `ghcr.io/rosti-cz/dcore:latest`
+| Regular tag | Experimental chunked tag | Tracks |
+| --- | --- | --- |
+| `trixie` | `trixie-chunked` | Daily Debian Trixie builds. |
+| `stable` | `stable-chunked` | Daily builds of the configured stable Debian release. |
+| `latest` | `latest-chunked` | An alias for the same build as `stable`. |
+| `<version>-trixie` | `<version>-trixie-chunked` | A versioned release, for example `v1.0.0-trixie`. |
+
+Regular images retain the existing squashed build format. Chunked images contain
+the same OS content, repacked to reuse unchanged layers across updates. Each
+release build publishes both versioned variants; existing historical release
+tags are not backfilled automatically. Release disk images and the offline ISO
+continue to use the regular image and track the regular update stream.
+Chunked publishing runs in separate jobs after normal publishing, so failures
+in the experiment do not block the original images or release artifacts.
+
+The variants use [chunkah](https://github.com/coreos/chunkah) to repack the same
+filesystem into up to 128 reusable OCI layers. Debian package file lists supply
+component ownership through extended attributes on a disposable copy. File
+timestamps are normalized to Unix epoch zero for layer reuse across builds;
+the image configuration, including bootc labels, is preserved and verified.
+This uses ordinary OCI layers, without requiring `zstd:chunked` support.
+
+To opt a test host into this stream, run
+`sudo bootc switch ghcr.io/rosti-cz/dcore:stable-chunked` and reboot. Subsequent
+`bootc upgrade` calls follow that tag. Switch back to `:stable` to leave the
+experiment. The initial transition changes the layer layout and can require a
+large download; savings depend on how much content changes between builds.
+
+Build a local experimental variant after building the ordinary image:
+
+```sh
+sudo scripts/build-chunked-image.sh localhost/dcore:trixie localhost/dcore:trixie-chunked
+```
+
+Local validation on 2026-11-07 repacked a cached dcore image into 128 layers,
+verified filesystem contents and metadata against the source, and passed the
+image, offline user-environment and privilege checks. Native composefs
+installation and the ZFS/Incus QEMU reboot and recovery tests also passed.
+Adding one small file under `/usr/share/dcore` reused 127 layers: 95% of the
+uncompressed layer data stayed unchanged. Registry transfer sizes also depend
+on compression.
 
 These daily tags describe **Debian releases**, not the maturity of the dcore
 project. `trixie` is Debian's codename; `stable` follows the Debian release

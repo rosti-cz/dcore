@@ -36,7 +36,7 @@ jobs:
           assert config['stable_release'] in config['releases']
           for release in config['releases']:
               assert re.fullmatch(r'[a-z][a-z0-9-]*', release), release
-              assert len(tag + '-' + release) <= 128, 'OCI tag is too long'
+              assert len(tag + '-' + release + '-chunked') <= 128, 'OCI tag is too long'
           assert re.fullmatch(r'[A-Za-z0-9._/-]+', config['bootc_ref'])
           assert config['incus_channel'] in ('stable', 'lts-6.0', 'lts-7.0', 'daily')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
@@ -190,3 +190,45 @@ jobs:
         run: |
           cat checksums/*-SHA256SUMS | sort -k2 > SHA256SUMS
           gh release upload "$RELEASE_TAG" SHA256SUMS --repo "$REPOSITORY" --clobber
+
+  chunked:
+    needs: [configure, build]
+    runs-on: [self-hosted, linux, x64, dcore]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.configure.outputs.matrix) }}
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      REPOSITORY: ${{ github.repository }}
+      DEBIAN_RELEASE: ${{ matrix.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Fetch the published versioned source image
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          IMAGE="ghcr.io/${REPOSITORY,,}"
+          VERSIONED_IMAGE="$IMAGE:$RELEASE_TAG-$DEBIAN_RELEASE"
+          echo "VERSIONED_IMAGE=$VERSIONED_IMAGE" >> "$GITHUB_ENV"
+          printf '%s' "$REGISTRY_TOKEN" | sudo podman login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          trap 'sudo podman logout ghcr.io' EXIT
+          sudo podman pull "$VERSIONED_IMAGE"
+          DIGEST=$(sudo podman image inspect --format '{{.Digest}}' "$VERSIONED_IMAGE")
+          echo "SOURCE_IMAGE=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
+      - name: Build and verify experimental chunked release image
+        run: sudo scripts/build-chunked-image.sh "$SOURCE_IMAGE" "$VERSIONED_IMAGE-chunked"
+      - name: Publish experimental chunked release tag
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | sudo podman login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          trap 'sudo podman logout ghcr.io' EXIT
+          sudo podman push "$VERSIONED_IMAGE-chunked"
